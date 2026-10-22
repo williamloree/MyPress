@@ -1,0 +1,106 @@
+# Tests à chaque push sur main ; installateurs Windows, macOS et Linux
+# sur un tag `v*` ou en lancement manuel (onglet Actions › Build & Release › Run workflow).
+# Les installateurs sont joints à une release GitHub en brouillon.
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  LINUX_DEPS: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dépendances système
+        run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      # L'application embarque l'interface compilée : elle doit exister avant `cargo test`.
+      - name: Interface
+        working-directory: app
+        run: pnpm install --frozen-lockfile && pnpm build
+      - name: Tests
+        run: cargo test --workspace
+
+  build:
+    needs: test
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            args: --bundles nsis
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
+          - name: macOS (Intel)
+            os: macos-latest
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg
+          - name: Linux
+            os: ubuntu-22.04
+            args: --bundles deb,rpm,appimage
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dépendances système
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - name: Dépendances JavaScript
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          tauriScript: pnpm tauri
+          args: ${{ matrix.args }}
+          tagName: v__VERSION__
+          releaseName: MyPress v__VERSION__
+          releaseBody: |
+            Installateurs non signés : voir « Installation » dans le README.
+            - Windows : `.exe`
+            - macOS : `.dmg` (aarch64 = Apple Silicon, x64 = Intel)
+            - Linux : `.deb` (Debian/Ubuntu), `.rpm` (Fedora), `.AppImage` (toutes distributions)
+          releaseDraft: true
+          prerelease: true

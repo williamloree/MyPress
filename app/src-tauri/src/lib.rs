@@ -35,8 +35,12 @@ impl Host for TauriHost {
     }
 }
 
-/// Clés de l'appareil dans le coffre du système (Gestionnaire d'identification Windows, Trousseau macOS).
-struct Keyring;
+/// Clés de l'appareil dans le coffre du système (Gestionnaire d'identification Windows,
+/// Trousseau macOS, Secret Service sous Linux). Sans coffre disponible (certains bureaux
+/// Linux), repli sur un fichier lisible par l'utilisateur seul.
+struct Keyring {
+    fallback: std::path::PathBuf,
+}
 
 impl Keyring {
     fn entry() -> keyring::Result<keyring::Entry> {
@@ -46,11 +50,25 @@ impl Keyring {
 
 impl Secrets for Keyring {
     fn load(&self) -> Option<String> {
-        Self::entry().ok()?.get_password().ok()
+        Self::entry()
+            .and_then(|e| e.get_password())
+            .ok()
+            .or_else(|| std::fs::read_to_string(&self.fallback).ok())
     }
     fn save(&self, value: &str) -> anyhow::Result<()> {
-        Self::entry()?.set_password(value)?;
-        Ok(())
+        match Self::entry().and_then(|e| e.set_password(value)) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::warn!("coffre du système indisponible ({e}), clés enregistrées dans un fichier protégé");
+                std::fs::write(&self.fallback, value)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&self.fallback, std::fs::Permissions::from_mode(0o600))?;
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -144,11 +162,14 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let store = store::Store::open(&dir.join("history-v2.db"))?;
-            let device_name = std::env::var("COMPUTERNAME")
-                .or_else(|_| std::env::var("HOSTNAME"))
-                .unwrap_or_else(|_| "Ordinateur".into());
+            let device_name = gethostname::gethostname()
+                .into_string()
+                .ok()
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "Ordinateur".into());
             let host = Arc::new(TauriHost(app.handle().clone()));
-            let core = Arc::new(Core::new(host, &Keyring, store, device_name)?);
+            let secrets = Keyring { fallback: dir.join("device.key") };
+            let core = Arc::new(Core::new(host, &secrets, store, device_name)?);
             app.manage(core.clone());
 
             build_tray(app, &core)?;

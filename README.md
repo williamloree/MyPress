@@ -24,13 +24,28 @@ ce que vous avez copié avec `Ctrl+Alt+V`, sans compte et sans serveur obligatoi
 
 ## Installation
 
-1. Télécharger `MyPress_0.1.0_x64-setup.exe` (voir [Construire l'installateur](#construire-linstallateur)).
-2. Le lancer. Windows peut afficher « Windows a protégé votre ordinateur » car l'installateur n'est pas
-   encore signé : *Informations complémentaires* › *Exécuter quand même*.
-3. Si le pare-feu Windows demande l'accès au réseau, cliquer sur *Autoriser* (nécessaire pour la synchronisation).
+Télécharger l'installateur de votre système dans les [Releases](../../releases) (produites par
+GitHub Actions, voir [plus bas](#construire-les-installateurs)). Les installateurs ne sont pas encore signés.
 
-Aucun droit administrateur ni logiciel à installer à part MyPress. WebView2 est fourni par Windows 10/11 ;
-s'il manque, l'installateur le télécharge.
+**Windows** — `MyPress_x.y.z_x64-setup.exe`
+1. Le lancer. Si Windows affiche « Windows a protégé votre ordinateur » : *Informations complémentaires* › *Exécuter quand même*.
+2. Si le pare-feu demande l'accès au réseau : *Autoriser* (nécessaire pour la synchronisation).
+
+Aucun droit administrateur requis. WebView2 est fourni par Windows 10/11 ; s'il manque, l'installateur le télécharge.
+
+**macOS** — `MyPress_x.y.z_aarch64.dmg` (Apple Silicon) ou `_x64.dmg` (Intel)
+1. Ouvrir le `.dmg` et glisser MyPress dans *Applications*.
+2. Premier lancement : clic droit sur MyPress › *Ouvrir* › *Ouvrir*. Si macOS indique que l'application est
+   endommagée : `xattr -cr /Applications/MyPress.app` dans le Terminal.
+3. Autoriser MyPress dans *Réglages Système › Confidentialité et sécurité › Accessibilité* si le raccourci
+   global ne répond pas.
+
+**Linux** — `.deb` (Debian, Ubuntu), `.rpm` (Fedora, openSUSE) ou `.AppImage` (toutes distributions)
+```sh
+sudo apt install ./MyPress_x.y.z_amd64.deb             # Debian/Ubuntu
+chmod +x MyPress_x.y.z_amd64.AppImage && ./MyPress_x.y.z_amd64.AppImage
+```
+Le raccourci global nécessite une session X11 (sous Wayland, il dépend du bureau).
 
 ## Utilisation
 
@@ -116,14 +131,21 @@ retrait d'appareil.
 cargo run -p mypress --example peer -- MP1-... "texte à copier"
 ```
 
-### Construire l'installateur
+### Construire les installateurs
+
+**Avec GitHub Actions** (`.github/workflows/release.yml`) : les tests tournent à chaque push sur `main`.
+Pour produire les installateurs des trois systèmes, lancer *Actions › Build & Release › Run workflow*
+ou pousser un tag (`git tag v0.1.1 && git push --tags`). Ils sont joints à une release en brouillon,
+à publier depuis l'onglet *Releases*. La version vient de `app/src-tauri/tauri.conf.json`.
+
+**En local** (installateur du système courant) :
 
 ```sh
 cd app
 pnpm tauri build
 ```
 
-Résultat : `target/release/bundle/nsis/MyPress_0.1.0_x64-setup.exe`. Pour un installateur totalement hors
+Sous Windows : `target/release/bundle/nsis/MyPress_0.1.0_x64-setup.exe`. Pour un installateur totalement hors
 ligne (WebView2 inclus, plus lourd), passer `webviewInstallMode` à `offlineInstaller` dans
 `app/src-tauri/tauri.conf.json`.
 
@@ -140,7 +162,8 @@ Elle garde au plus 1000 éléments par groupe et les marqueurs de suppression 60
 ## Limites connues
 
 - Texte uniquement : images, texte enrichi et fichiers sont prévus pour plus tard.
-- Windows uniquement pour l'instant (architecture prête pour macOS et Linux).
+- Testé uniquement sous Windows. Les versions macOS et Linux sont compilées par GitHub Actions mais pas
+  encore éprouvées ; le collage automatique n'y est pas fait (l'élément est copié, il reste à faire `Cmd+V`/`Ctrl+V`).
 - Raccourci `Ctrl+Alt+V` non modifiable ; le collage automatique est refusé par les applications lancées
   en administrateur (protection de Windows).
 - Dépend des services publics de n0 (découverte et relais) ; ils voient quels appareils communiquent, jamais
