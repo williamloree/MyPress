@@ -135,8 +135,8 @@ cargo run -p mypress --example peer -- MP1-... "texte à copier"
 
 **Avec GitHub Actions** (`.github/workflows/release.yml`) : les tests tournent à chaque push sur `main`.
 Pour produire les installateurs des trois systèmes, lancer *Actions › Build & Release › Run workflow*
-ou pousser un tag (`git tag v0.1.1 && git push --tags`). Ils sont joints à une release en brouillon,
-à publier depuis l'onglet *Releases*. La version vient de `app/src-tauri/tauri.conf.json`.
+ou pousser un tag (`git tag v0.1.1 && git push --tags`). Ils sont publiés dans l'onglet *Releases*.
+La version vient de `app/src-tauri/tauri.conf.json` : l'augmenter avant chaque nouvelle release.
 
 **En local** (installateur du système courant) :
 

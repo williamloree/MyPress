@@ -1,6 +1,6 @@
 # Tests à chaque push sur main ; installateurs Windows, macOS et Linux
 # sur un tag `v*` ou en lancement manuel (onglet Actions › Build & Release › Run workflow).
-# Les installateurs sont joints à une release GitHub en brouillon.
+# Les installateurs sont publiés dans une release GitHub (onglet Releases).
 name: Build & Release
 
 on:
@@ -102,5 +102,5 @@ jobs:
             - Windows : `.exe`
             - macOS : `.dmg` (aarch64 = Apple Silicon, x64 = Intel)
             - Linux : `.deb` (Debian/Ubuntu), `.rpm` (Fedora), `.AppImage` (toutes distributions)
-          releaseDraft: true
+          releaseDraft: false
           prerelease: true
