@@ -73,8 +73,8 @@ Aucun Java, Python ni droit administrateur requis.
 > Windows et macOS au premier lancement.
 
 **Mises à jour** : à partir de la 0.1.1, MyPress vérifie les releases au démarrage puis toutes les 6 heures,
-installe la nouvelle version et redémarre tout seul (Windows, macOS, Linux en `.AppImage` ; avec
-`.deb`/`.rpm`, réinstaller le paquet). Une mise à jour non signée par la clé du projet est refusée.
+installe la nouvelle version et redémarre tout seul (Windows, macOS, Linux). Une mise à jour non signée
+par la clé du projet est refusée. La 0.1.0 n'a pas cette fonction : installer la 0.1.1 une fois à la main.
 
 ## Utilisation
 
