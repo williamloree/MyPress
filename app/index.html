@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MyPress</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <section id="history" class="view">
+      <header class="bar" data-tauri-drag-region>
+        <input id="search" type="search" placeholder="Rechercher dans l'historique…" autocomplete="off" spellcheck="false" />
+      </header>
+      <ul id="list" role="listbox" aria-label="Historique"></ul>
+      <p id="empty" class="empty" hidden>Aucun élément.</p>
+      <footer class="bar foot" data-tauri-drag-region>
+        <span id="status" class="status"><i></i><span></span></span>
+        <span class="hint">↑↓ choisir · Entrée coller · Suppr effacer · Échap fermer</span>
+        <button id="open-settings" class="icon" title="Paramètres" aria-label="Paramètres">⚙</button>
+      </footer>
+    </section>
+
+    <section id="settings" class="view" hidden>
+      <header class="bar" data-tauri-drag-region>
+        <button id="back" class="icon" title="Retour à l'historique" aria-label="Retour">←</button>
+        <h1 data-tauri-drag-region>Paramètres</h1>
+        <button id="close" class="icon" title="Fermer" aria-label="Fermer">✕</button>
+      </header>
+      <div class="scroll">
+        <p id="notice" class="note warn" hidden></p>
+
+        <h2>Appareils</h2>
+        <p id="sync-status" class="muted"></p>
+        <ul id="devices"></ul>
+        <div class="row">
+          <button id="invite" class="primary">Ajouter un appareil</button>
+          <button id="leave" class="danger" hidden>Quitter le groupe</button>
+        </div>
+        <div id="invite-box" hidden>
+          <p class="note">Sur l'autre ordinateur : MyPress › Paramètres › « Rejoindre un autre ordinateur », puis collez ce code. Valable 15 minutes, une seule fois. Cet ordinateur doit rester allumé pendant l'association.</p>
+          <textarea id="invite-code" readonly rows="2"></textarea>
+          <button id="copy-invite">Copier le code</button>
+        </div>
+        <details id="join-box">
+          <summary>Rejoindre un autre ordinateur</summary>
+          <div class="row">
+            <input id="join-code" placeholder="MP1-…" autocomplete="off" spellcheck="false" />
+            <button id="join">Rejoindre</button>
+          </div>
+          <p class="note">L'historique de cet ordinateur sera fusionné avec celui du groupe.</p>
+          <p id="join-error" class="error" hidden></p>
+        </details>
+
+        <h2>Boîte aux lettres (optionnel)</h2>
+        <p class="note">Sans elle, les copies passent directement d'un ordinateur à l'autre quand ils sont allumés en même temps. Avec elle, un ordinateur rallumé récupère aussi ce qui a été copié pendant qu'il était éteint. Son contenu reste chiffré.</p>
+        <form id="mailbox-form" class="row">
+          <input id="mailbox-url" type="url" placeholder="https://boite.exemple.fr" />
+          <button type="submit">Enregistrer</button>
+        </form>
+        <p id="mailbox-status" class="muted"></p>
+
+        <h2>Historique</h2>
+        <label class="inline">Éléments conservés <select id="limit"></select></label>
+        <button id="clear" class="danger">Vider l'historique</button>
+
+        <h2>Démarrage</h2>
+        <label class="inline"><input id="autostart" type="checkbox" /> Lancer au démarrage de l'ordinateur</label>
+
+        <p class="note">Raccourci : <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>V</kbd>. Mode privé et pause de la synchronisation : menu de l'icône dans la barre des tâches.</p>
+      </div>
+    </section>
+
+    <div id="toast" class="toast" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

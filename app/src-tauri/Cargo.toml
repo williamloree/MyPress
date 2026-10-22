@@ -1,0 +1,47 @@
+[package]
+name = "mypress"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "mypress_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+mypress-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+arboard = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+keyring = { version = "3", features = ["windows-native", "apple-native"] }
+url = "2"
+iroh = "1.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+[dev-dependencies]
+mypress-server = { path = "../../server" }
+axum = "0.8"
