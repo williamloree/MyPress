@@ -135,6 +135,31 @@ fn build_tray(app: &tauri::App, core: &Arc<Core>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Vérifie les releases GitHub au démarrage puis toutes les 6 heures ; installe et relance.
+async fn auto_update(app: AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    loop {
+        let update = match app.updater() {
+            Ok(u) => u.check().await,
+            Err(e) => Err(e),
+        };
+        match update {
+            Ok(Some(update)) => {
+                tracing::info!("mise à jour {} disponible, installation", update.version);
+                match update.download_and_install(|_, _| {}, || {}).await {
+                    // Sous Windows l'installateur ferme déjà l'application.
+                    Ok(()) => app.restart(),
+                    Err(e) => tracing::warn!("mise à jour échouée : {e}"),
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("vérification des mises à jour impossible : {e}"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -148,6 +173,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_view(app, "settings")))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, s, event| {
@@ -173,6 +199,7 @@ pub fn run() {
             app.manage(core.clone());
 
             build_tray(app, &core)?;
+            tauri::async_runtime::spawn(auto_update(app.handle().clone()));
 
             if let Err(e) = app.global_shortcut().register(shortcut) {
                 tracing::error!("raccourci {HISTORY_SHORTCUT} indisponible : {e}");

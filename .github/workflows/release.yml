@@ -1,6 +1,7 @@
 # Tests à chaque push sur main ; installateurs Windows, macOS et Linux
 # sur un tag `v*` ou en lancement manuel (onglet Actions › Build & Release › Run workflow).
-# Les installateurs sont publiés dans une release GitHub (onglet Releases).
+# Les installateurs sont publiés dans une release GitHub (onglet Releases), avec latest.json
+# pour la mise à jour automatique des applications installées.
 name: Build & Release
 
 on:
@@ -91,6 +92,9 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signe les paquets de mise à jour automatique (clé publique dans tauri.conf.json).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: app
           tauriScript: pnpm tauri
@@ -103,4 +107,5 @@ jobs:
             - macOS : `.dmg` (aarch64 = Apple Silicon, x64 = Intel)
             - Linux : `.deb` (Debian/Ubuntu), `.rpm` (Fedora), `.AppImage` (toutes distributions)
           releaseDraft: false
-          prerelease: true
+          # Pas de pre-release : l'application cherche ses mises à jour dans releases/latest.
+          prerelease: false

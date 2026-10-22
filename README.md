@@ -33,6 +33,11 @@ GitHub Actions, voir [plus bas](#construire-les-installateurs)). Les installateu
 
 Aucun droit administrateur requis. WebView2 est fourni par Windows 10/11 ; s'il manque, l'installateur le télécharge.
 
+**Mises à jour** : à partir de la 0.1.1, MyPress vérifie les [Releases](../../releases) au démarrage puis toutes
+les 6 heures, installe la nouvelle version et redémarre tout seul (Windows, macOS, Linux en `.AppImage` ;
+avec `.deb`/`.rpm`, réinstaller le paquet). Les mises à jour sont signées : une version non signée par la
+clé du projet est refusée.
+
 **macOS** — `MyPress_x.y.z_aarch64.dmg` (Apple Silicon) ou `_x64.dmg` (Intel)
 1. Ouvrir le `.dmg` et glisser MyPress dans *Applications*.
 2. Premier lancement : clic droit sur MyPress › *Ouvrir* › *Ouvrir*. Si macOS indique que l'application est
@@ -136,7 +141,10 @@ cargo run -p mypress --example peer -- MP1-... "texte à copier"
 **Avec GitHub Actions** (`.github/workflows/release.yml`) : les tests tournent à chaque push sur `main`.
 Pour produire les installateurs des trois systèmes, lancer *Actions › Build & Release › Run workflow*
 ou pousser un tag (`git tag v0.1.1 && git push --tags`). Ils sont publiés dans l'onglet *Releases*.
-La version vient de `app/src-tauri/tauri.conf.json` : l'augmenter avant chaque nouvelle release.
+La version vient de `app/src-tauri/tauri.conf.json` : l'augmenter avant chaque nouvelle release, sinon les
+applications installées ne voient pas la mise à jour. Les paquets de mise à jour sont signés avec la clé des
+secrets `TAURI_SIGNING_PRIVATE_KEY` et `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (sa clé publique est dans
+`tauri.conf.json`) ; la perdre empêche toute mise à jour automatique.
 
 **En local** (installateur du système courant) :
 
@@ -171,4 +179,4 @@ Elle garde au plus 1000 éléments par groupe et les marqueurs de suppression 60
 - Tout membre du groupe peut ajouter ou retirer des appareils. Un appareil retiré pourrait encore tromper un
   membre qui n'a pas appris la révocation, ou vider l'ancienne boîte aux lettres.
 - L'ordre de l'historique se base sur l'horloge de chaque ordinateur.
-- Installateur non signé, pas de mise à jour automatique.
+- Installateur non signé (avertissement Windows SmartScreen et macOS Gatekeeper).
