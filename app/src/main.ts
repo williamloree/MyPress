@@ -33,6 +33,12 @@ interface AppState {
   capture_paused: boolean;
   sync_paused: boolean;
   autostart: boolean;
+  version: string;
+  update: {
+    state: "" | "idle" | "checking" | "up_to_date" | "installing" | "error";
+    detail: string | null;
+    checked_at: number | null;
+  };
 }
 
 interface ShareGroup {
@@ -379,7 +385,21 @@ function renderSettings() {
     ...state.history_limits.map((n) => new Option(`${n}`, `${n}`, false, n === state.history_limit)),
   );
   $<HTMLInputElement>("autostart").checked = state.autostart;
+
+  const u = state.update;
+  const label = {
+    "": "première vérification dans quelques secondes",
+    idle: "première vérification dans quelques secondes",
+    checking: "recherche en cours…",
+    up_to_date: `à jour${u.checked_at ? ` (vérifié ${ago(u.checked_at)})` : ""}`,
+    installing: `installation de la version ${u.detail}, redémarrage imminent…`,
+    error: `vérification impossible : ${u.detail}`,
+  }[u.state];
+  $("update-status").textContent = `Version ${state.version} · ${label}`;
+  $<HTMLButtonElement>("check-updates").disabled = u.state === "checking" || u.state === "installing";
 }
+
+$("check-updates").onclick = () => call("check_updates");
 
 $("invite").onclick = async () => {
   const code = await call<string>("create_invite");

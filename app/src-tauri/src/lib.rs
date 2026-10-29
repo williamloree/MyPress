@@ -22,6 +22,25 @@ pub const HISTORY_SHORTCUT: &str = "Ctrl+Alt+V";
 /// Vue affichée dans la fenêtre : "history" (panneau rapide) ou "settings".
 pub struct View(pub Mutex<String>);
 
+/// État de la mise à jour automatique, affiché dans les paramètres.
+#[derive(Clone, Default, serde::Serialize)]
+pub struct UpdateStatus {
+    /// "idle", "checking", "up_to_date", "installing", "error".
+    pub state: &'static str,
+    pub detail: Option<String>,
+    /// Dernière vérification réussie (ms).
+    pub checked_at: Option<i64>,
+}
+
+#[derive(Default)]
+pub struct Updates {
+    pub status: Mutex<UpdateStatus>,
+    /// Réveille la boucle de vérification (bouton « Rechercher maintenant »).
+    pub check_now: tokio::sync::Notify,
+}
+
+const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 struct TauriHost(AppHandle);
 
 impl Host for TauriHost {
@@ -141,11 +160,26 @@ fn build_tray(app: &tauri::App, core: &Arc<Core>) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Vérifie les releases GitHub au démarrage puis toutes les 6 heures ; installe et relance.
-async fn auto_update(app: AppHandle) {
+/// Surveille les releases GitHub (`latest.json`) peu après le démarrage puis toutes les
+/// 30 minutes, ou à la demande ; installe la nouvelle version et relance.
+async fn auto_update(app: AppHandle, updates: Arc<Updates>) {
     use tauri_plugin_updater::UpdaterExt;
-    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    let set = |state: &'static str, detail: Option<String>| {
+        let mut s = updates.status.lock().unwrap();
+        s.state = state;
+        s.detail = detail;
+        if state == "up_to_date" {
+            s.checked_at = Some(store::now_ms());
+        }
+        drop(s);
+        let _ = app.emit("status-changed", ());
+    };
+    tokio::select! {
+        _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+        _ = updates.check_now.notified() => {}
+    }
     loop {
+        set("checking", None);
         let update = match app.updater() {
             Ok(u) => u.check().await,
             Err(e) => Err(e),
@@ -153,16 +187,26 @@ async fn auto_update(app: AppHandle) {
         match update {
             Ok(Some(update)) => {
                 tracing::info!("mise à jour {} disponible, installation", update.version);
+                set("installing", Some(update.version.clone()));
                 match update.download_and_install(|_, _| {}, || {}).await {
                     // Sous Windows l'installateur ferme déjà l'application.
                     Ok(()) => app.restart(),
-                    Err(e) => tracing::warn!("mise à jour échouée : {e}"),
+                    Err(e) => {
+                        tracing::warn!("mise à jour échouée : {e}");
+                        set("error", Some(format!("installation de la {} échouée : {e}", update.version)));
+                    }
                 }
             }
-            Ok(None) => {}
-            Err(e) => tracing::warn!("vérification des mises à jour impossible : {e}"),
+            Ok(None) => set("up_to_date", None),
+            Err(e) => {
+                tracing::warn!("vérification des mises à jour impossible : {e}");
+                set("error", Some(e.to_string()));
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(UPDATE_INTERVAL) => {}
+            _ = updates.check_now.notified() => {}
+        }
     }
 }
 
@@ -190,6 +234,7 @@ pub fn run() {
                 .build(),
         )
         .manage(View(Mutex::new("history".into())))
+        .manage(Arc::new(Updates::default()))
         .setup(move |app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -211,7 +256,8 @@ pub fn run() {
             app.manage(share.clone());
 
             build_tray(app, &core)?;
-            tauri::async_runtime::spawn(auto_update(app.handle().clone()));
+            let updates = app.state::<Arc<Updates>>().inner().clone();
+            tauri::async_runtime::spawn(auto_update(app.handle().clone(), updates));
 
             if let Err(e) = app.global_shortcut().register(shortcut) {
                 tracing::error!("raccourci {HISTORY_SHORTCUT} indisponible : {e}");
@@ -282,6 +328,7 @@ pub fn run() {
             commands::set_autostart,
             commands::set_view,
             commands::hide_window,
+            commands::check_updates,
             commands::share_state,
             commands::create_share_group,
             commands::share_invite,

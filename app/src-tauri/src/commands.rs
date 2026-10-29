@@ -15,7 +15,7 @@ use crate::{
     mailbox, p2p,
     share::{Share, ShareGroup, Transfer},
     store::Item,
-    View,
+    UpdateStatus, Updates, View,
 };
 
 type Res<T> = Result<T, String>;
@@ -48,6 +48,8 @@ pub struct StateView {
     capture_paused: bool,
     sync_paused: bool,
     autostart: bool,
+    version: String,
+    update: UpdateStatus,
 }
 
 /// Résumé lisible de l'état de la synchronisation (aussi utilisé par le menu de l'icône).
@@ -78,7 +80,7 @@ pub fn status(core: &Core) -> (&'static str, String) {
 }
 
 #[tauri::command]
-pub fn get_state(app: AppHandle, core: State<Arc<Core>>) -> StateView {
+pub fn get_state(app: AppHandle, core: State<Arc<Core>>, updates: State<Arc<Updates>>) -> StateView {
     let group = core.group();
     let online = core.online_members();
     let (status, status_label) = status(&core);
@@ -105,7 +107,15 @@ pub fn get_state(app: AppHandle, core: State<Arc<Core>>) -> StateView {
         capture_paused: core.capture_paused(),
         sync_paused: core.sync_paused(),
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
+        version: app.package_info().version.to_string(),
+        update: updates.status.lock().unwrap().clone(),
     }
+}
+
+/// Lance tout de suite une vérification des mises à jour.
+#[tauri::command]
+pub fn check_updates(updates: State<Arc<Updates>>) {
+    updates.check_now.notify_one();
 }
 
 #[tauri::command]
