@@ -54,6 +54,31 @@ pub fn hash_text(text: &str) -> String {
 }
 
 const COLS: &str = "id, created_at, device_id, device_name, kind, text, deleted";
+/// Comme `COLS`, mais l'aperçu remplace le contenu des images (affichage de l'historique).
+const VIEW_COLS: &str =
+    "id, created_at, device_id, device_name, kind, CASE WHEN kind = 'image' THEN COALESCE(thumb, '') ELSE text END, deleted";
+
+/// Minuscules sans accents, pour la recherche.
+fn fold(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => 'a',
+            'ç' => 'c',
+            'è' | 'é' | 'ê' | 'ë' => 'e',
+            'ì' | 'í' | 'î' | 'ï' => 'i',
+            'ñ' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' => 'u',
+            'ý' | 'ÿ' => 'y',
+            c => c,
+        })
+        .collect()
+}
+
+fn thumb_of(kind: ContentKind, text: &str) -> Option<String> {
+    (kind == ContentKind::Image).then(|| crate::clipboard::thumbnail(text)).flatten()
+}
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
     let id: String = r.get(0)?;
@@ -99,6 +124,8 @@ impl Store {
              CREATE INDEX IF NOT EXISTS items_live ON items(deleted, created_at);
              CREATE INDEX IF NOT EXISTS items_hash ON items(hash);",
         )?;
+        // Aperçu des images, local à l'appareil. Échoue si la colonne existe déjà.
+        let _ = conn.execute("ALTER TABLE items ADD COLUMN thumb TEXT", []);
         Ok(Self { conn })
     }
 
@@ -146,9 +173,9 @@ impl Store {
         self.row(id).filter(|r| !r.deleted).map(|r| r.item)
     }
 
-    /// Copie locale. Si le même texte existe déjà, l'ancien élément est supprimé
-    /// pour que le texte remonte en tête sans doublon. Retourne les lignes modifiées.
-    pub fn capture(&mut self, text: &str, device_id: &str, device_name: &str, limit: u32) -> rusqlite::Result<Vec<Uuid>> {
+    /// Copie locale. Si le même contenu existe déjà, l'ancien élément est supprimé
+    /// pour que le contenu remonte en tête sans doublon. Retourne les lignes modifiées.
+    pub fn capture(&mut self, text: &str, kind: ContentKind, device_id: &str, device_name: &str, limit: u32) -> rusqlite::Result<Vec<Uuid>> {
         let hash = hash_text(text);
         let dupes: Vec<String> = {
             let mut stmt = self.conn.prepare("SELECT id FROM items WHERE hash = ?1 AND deleted = 0")?;
@@ -164,9 +191,9 @@ impl Store {
         let id = Uuid::now_v7();
         let now = now_ms();
         self.conn.execute(
-            "INSERT INTO items (id, created_at, device_id, device_name, kind, text, hash, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?2)",
-            params![id.to_string(), now, device_id, device_name, ContentKind::detect(text).as_str(), text, hash],
+            "INSERT INTO items (id, created_at, device_id, device_name, kind, text, hash, updated_at, thumb)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?2, ?8)",
+            params![id.to_string(), now, device_id, device_name, kind.as_str(), text, hash, thumb_of(kind, text)],
         )?;
         changed.push(id);
         self.prune(limit)?;
@@ -182,16 +209,27 @@ impl Store {
             (Some(_), Some(_)) => Ok(Applied::Ignored),
             (Some(p), None) => {
                 self.conn.execute(
-                    "INSERT INTO items (id, created_at, device_id, device_name, kind, text, hash, updated_at, synced)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![id.to_string(), created_at, p.device_id, p.device_name, p.kind.as_str(), p.text, hash_text(&p.text), now, synced],
+                    "INSERT INTO items (id, created_at, device_id, device_name, kind, text, hash, updated_at, synced, thumb)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        id.to_string(),
+                        created_at,
+                        p.device_id,
+                        p.device_name,
+                        p.kind.as_str(),
+                        p.text,
+                        hash_text(&p.text),
+                        now,
+                        synced,
+                        thumb_of(p.kind, &p.text)
+                    ],
                 )?;
                 Ok(Applied::New)
             }
             (None, Some(r)) if r.deleted => Ok(Applied::Ignored),
             (None, Some(_)) => {
                 self.conn.execute(
-                    "UPDATE items SET deleted = 1, text = '', hash = '', updated_at = ?2, synced = ?3 WHERE id = ?1",
+                    "UPDATE items SET deleted = 1, text = '', hash = '', thumb = NULL, updated_at = ?2, synced = ?3 WHERE id = ?1",
                     params![id.to_string(), now, synced],
                 )?;
                 Ok(Applied::Deleted)
@@ -211,7 +249,7 @@ impl Store {
     /// Suppression locale : le texte est effacé tout de suite, le marqueur reste pour les autres appareils.
     pub fn mark_deleted(&self, id: Uuid) -> rusqlite::Result<bool> {
         let n = self.conn.execute(
-            "UPDATE items SET deleted = 1, text = '', hash = '', updated_at = ?2, synced = 0 WHERE id = ?1 AND deleted = 0",
+            "UPDATE items SET deleted = 1, text = '', hash = '', thumb = NULL, updated_at = ?2, synced = 0 WHERE id = ?1 AND deleted = 0",
             params![id.to_string(), now_ms()],
         )?;
         Ok(n > 0)
@@ -247,17 +285,18 @@ impl Store {
         Ok(())
     }
 
-    /// Recherche insensible à la casse (accents compris), faite en Rust :
-    /// l'historique est borné à quelques centaines d'éléments.
+    /// Recherche insensible à la casse et aux accents, faite en Rust :
+    /// l'historique est borné à quelques centaines d'éléments. Les images, sans texte,
+    /// n'apparaissent que sans filtre, avec leur aperçu à la place du contenu.
     pub fn search(&self, query: &str, limit: usize) -> rusqlite::Result<Vec<Item>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {COLS} FROM items WHERE deleted = 0 ORDER BY created_at DESC, id DESC"
+            "SELECT {VIEW_COLS} FROM items WHERE deleted = 0 ORDER BY created_at DESC, id DESC"
         ))?;
-        let needle = query.trim().to_lowercase();
+        let needle = fold(query.trim());
         let mut out = Vec::new();
         for r in stmt.query_map([], row)? {
             let item = r?.item;
-            if needle.is_empty() || item.text.to_lowercase().contains(&needle) {
+            if needle.is_empty() || (item.kind != "image" && fold(&item.text).contains(&needle)) {
                 out.push(item);
                 if out.len() >= limit {
                     break;
@@ -318,14 +357,14 @@ mod tests {
     #[test]
     fn capture_dedupes_and_prunes() {
         let mut s = Store::open_in_memory().unwrap();
-        s.capture("a", "me", "PC", 50).unwrap();
-        s.capture("b", "me", "PC", 50).unwrap();
-        s.capture("a", "me", "PC", 50).unwrap();
+        s.capture("a", ContentKind::Text, "me", "PC", 50).unwrap();
+        s.capture("b", ContentKind::Text, "me", "PC", 50).unwrap();
+        s.capture("a", ContentKind::Text, "me", "PC", 50).unwrap();
         let texts: Vec<_> = s.search("", 100).unwrap().into_iter().map(|i| i.text).collect();
         assert_eq!(texts, ["a", "b"]);
         assert_eq!(s.summary().unwrap().values().filter(|d| **d).count(), 1, "ancien « a » devenu marqueur");
         for n in 0..60 {
-            s.capture(&format!("x{n}"), "me", "PC", 50).unwrap();
+            s.capture(&format!("x{n}"), ContentKind::Text, "me", "PC", 50).unwrap();
         }
         assert_eq!(s.search("", 1000).unwrap().len(), 50);
         assert_eq!(s.latest().unwrap().text, "x59");
@@ -349,9 +388,9 @@ mod tests {
     #[test]
     fn missing_for_peer() {
         let mut s = Store::open_in_memory().unwrap();
-        let ids = s.capture("a", "me", "PC", 100).unwrap();
+        let ids = s.capture("a", ContentKind::Text, "me", "PC", 100).unwrap();
         let a = ids[0];
-        let b = s.capture("b", "me", "PC", 100).unwrap()[0];
+        let b = s.capture("b", ContentKind::Text, "me", "PC", 100).unwrap()[0];
         s.mark_deleted(b).unwrap();
         // Le pair a « a » et « b » vivants : seul le marqueur de « b » lui manque.
         let peer = HashMap::from([(a, false), (b, false)]);
@@ -363,12 +402,29 @@ mod tests {
     }
 
     #[test]
+    fn image_shows_thumbnail_and_is_not_searchable() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(800, 100).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let png = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, png.into_inner());
+        let mut s = Store::open_in_memory().unwrap();
+        let id = s.capture(&png, ContentKind::Image, "me", "PC", 100).unwrap()[0];
+        s.capture("texte", ContentKind::Text, "me", "PC", 100).unwrap();
+        let all = s.search("", 10).unwrap();
+        assert_eq!(all[1].kind, "image");
+        assert!(!all[1].text.is_empty());
+        assert_eq!(s.item(id).unwrap().text, png, "contenu complet pour le collage");
+        assert!(s.search("A", 10).unwrap().is_empty(), "le base64 ne doit pas être cherché");
+    }
+
+    #[test]
     fn search_is_literal_and_case_insensitive() {
         let mut s = Store::open_in_memory().unwrap();
-        s.capture("100% Sûr", "me", "PC", 100).unwrap();
-        s.capture("1000 sur", "me", "PC", 100).unwrap();
+        s.capture("100% Sûr", ContentKind::Text, "me", "PC", 100).unwrap();
+        s.capture("1000 sur", ContentKind::Text, "me", "PC", 100).unwrap();
         assert_eq!(s.search("0%", 10).unwrap().len(), 1);
-        assert_eq!(s.search("sÛr", 10).unwrap().len(), 1);
-        assert_eq!(s.search("SUR", 10).unwrap().len(), 1);
+        assert_eq!(s.search("sÛr", 10).unwrap().len(), 2);
+        assert_eq!(s.search("SUR", 10).unwrap().len(), 2);
+        assert_eq!(s.search("100", 10).unwrap().len(), 2);
+        assert_eq!(s.search("% sur", 10).unwrap().len(), 1);
     }
 }

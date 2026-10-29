@@ -23,7 +23,10 @@ use tokio::sync::mpsc;
 
 use mypress_proto::api::{PeerMsg, Record};
 
-use crate::core::{parse_invite, Core, Peer};
+use crate::{
+    core::{parse_invite, Core, Peer},
+    share::{self, Share},
+};
 
 pub const ALPN: &[u8] = b"mypress/1";
 const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -32,7 +35,7 @@ const BATCH_BYTES: usize = 4 * 1024 * 1024;
 const DIAL_INTERVAL: Duration = Duration::from_secs(20);
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-async fn write_msg(send: &mut SendStream, msg: &PeerMsg) -> anyhow::Result<()> {
+pub(crate) async fn write_msg(send: &mut SendStream, msg: &impl serde::Serialize) -> anyhow::Result<()> {
     let data = serde_json::to_vec(msg)?;
     send.write_all(&(data.len() as u32).to_be_bytes()).await?;
     send.write_all(&data).await?;
@@ -40,7 +43,7 @@ async fn write_msg(send: &mut SendStream, msg: &PeerMsg) -> anyhow::Result<()> {
 }
 
 /// `None` : le flux a été fermé proprement.
-async fn read_msg(recv: &mut RecvStream) -> anyhow::Result<Option<PeerMsg>> {
+pub(crate) async fn read_msg<T: serde::de::DeserializeOwned>(recv: &mut RecvStream) -> anyhow::Result<Option<T>> {
     let mut len = [0u8; 4];
     if recv.read_exact(&mut len).await.is_err() {
         return Ok(None);
@@ -73,25 +76,33 @@ fn batches(records: Vec<Record>) -> Vec<PeerMsg> {
     out
 }
 
-pub fn start(core: Arc<Core>, endpoint: Endpoint) {
+/// `share` : groupes de partage et fichiers (absent dans les outils de test en ligne de commande).
+pub fn start(core: Arc<Core>, endpoint: Endpoint, share: Option<Arc<Share>>) {
     let _ = core.endpoint.set(endpoint.clone());
-    tokio::spawn(accept_loop(core.clone(), endpoint.clone()));
+    tokio::spawn(accept_loop(core.clone(), endpoint.clone(), share));
     tokio::spawn(dial_loop(core, endpoint));
 }
 
-async fn accept_loop(core: Arc<Core>, endpoint: Endpoint) {
+async fn accept_loop(core: Arc<Core>, endpoint: Endpoint, share: Option<Arc<Share>>) {
     while let Some(incoming) = endpoint.accept().await {
-        let core = core.clone();
+        let (core, share) = (core.clone(), share.clone());
         tokio::spawn(async move {
-            if let Err(e) = accept_one(core, incoming).await {
+            if let Err(e) = accept_one(core, share, incoming).await {
                 tracing::debug!("connexion entrante refusée : {e}");
             }
         });
     }
 }
 
-async fn accept_one(core: Arc<Core>, incoming: iroh::endpoint::Incoming) -> anyhow::Result<()> {
+async fn accept_one(core: Arc<Core>, share: Option<Arc<Share>>, incoming: iroh::endpoint::Incoming) -> anyhow::Result<()> {
     let conn = incoming.await?;
+    // Partage de fichiers : indépendant de la pause de la synchronisation.
+    if conn.alpn() == share::ALPN {
+        if let Some(share) = share {
+            share.accept(conn).await;
+        }
+        return Ok(());
+    }
     if core.sync_paused() {
         conn.close(0u32.into(), b"pause");
         return Ok(());

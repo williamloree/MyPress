@@ -3,6 +3,7 @@ mod commands;
 pub mod core;
 pub mod mailbox;
 pub mod p2p;
+pub mod share;
 pub mod store;
 
 use std::sync::{atomic::Ordering, Arc, Mutex};
@@ -32,6 +33,9 @@ impl Host for TauriHost {
     }
     fn write_clipboard(&self, text: &str) -> anyhow::Result<()> {
         clipboard::write_text(text)
+    }
+    fn write_image(&self, png_b64: &str) -> anyhow::Result<()> {
+        clipboard::write_image(png_b64)
     }
 }
 
@@ -99,10 +103,11 @@ fn build_tray(app: &tauri::App, core: &Arc<Core>) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", commands::status(core).1, false, None::<&str>)?;
     let capture = CheckMenuItem::with_id(app, "capture", "Mode privé (ne rien enregistrer)", true, core.capture_paused(), None::<&str>)?;
     let sync = CheckMenuItem::with_id(app, "sync", "Suspendre la synchronisation", true, core.sync_paused(), None::<&str>)?;
+    let share = MenuItem::with_id(app, "share", "Envoyer des fichiers…", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Appareils et paramètres…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, None::<&str>)?;
     let sep = || PredefinedMenuItem::separator(app);
-    let menu = Menu::with_items(app, &[&open, &sep()?, &status, &capture, &sync, &sep()?, &settings, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &sep()?, &status, &capture, &sync, &sep()?, &share, &settings, &quit])?;
 
     let handle = app.handle().clone();
     app.listen("status-changed", move |_| {
@@ -120,6 +125,7 @@ fn build_tray(app: &tauri::App, core: &Arc<Core>) -> tauri::Result<()> {
             match event.id().as_ref() {
                 "open" => show_view(app, "history"),
                 "settings" => show_view(app, "settings"),
+                "share" => show_view(app, "share"),
                 "capture" => core.set_capture_paused(capture.is_checked().unwrap_or(false)),
                 "sync" => core.set_sync_paused(sync.is_checked().unwrap_or(false)),
                 "quit" => app.exit(0),
@@ -197,6 +203,12 @@ pub fn run() {
             let secrets = Keyring { fallback: dir.join("device.key") };
             let core = Arc::new(Core::new(host, &secrets, store, device_name)?);
             app.manage(core.clone());
+            let received = app.path().download_dir().map(|d| d.join("MyPress")).unwrap_or_else(|_| dir.join("recus"));
+            let handle = app.handle().clone();
+            let share = Arc::new(share::Share::new(core.clone(), received, move || {
+                let _ = handle.emit("shares-changed", ());
+            }));
+            app.manage(share.clone());
 
             build_tray(app, &core)?;
             tauri::async_runtime::spawn(auto_update(app.handle().clone()));
@@ -206,18 +218,21 @@ pub fn run() {
             }
 
             let c = core.clone();
-            clipboard::watch(move |text| c.on_clipboard_text(text));
+            clipboard::watch(move |clip| match clip {
+                clipboard::Clip::Text(text) => c.on_clipboard_text(text),
+                clipboard::Clip::Image(png) => c.on_clipboard_image(png),
+            });
 
             let c = core.clone();
             tauri::async_runtime::spawn(async move {
                 // Connexion directe si possible, relais public n0 sinon ; adresse publiée via DNS n0.
                 match iroh::Endpoint::builder(iroh::endpoint::presets::N0)
                     .secret_key(c.iroh_key.clone())
-                    .alpns(vec![p2p::ALPN.to_vec()])
+                    .alpns(vec![p2p::ALPN.to_vec(), share::ALPN.to_vec()])
                     .bind()
                     .await
                 {
-                    Ok(endpoint) => p2p::start(c.clone(), endpoint),
+                    Ok(endpoint) => p2p::start(c.clone(), endpoint, Some(share)),
                     Err(e) => tracing::error!("réseau P2P indisponible : {e}"),
                 }
                 mailbox::run(c).await;
@@ -267,6 +282,13 @@ pub fn run() {
             commands::set_autostart,
             commands::set_view,
             commands::hide_window,
+            commands::share_state,
+            commands::create_share_group,
+            commands::share_invite,
+            commands::join_share_group,
+            commands::leave_share_group,
+            commands::send_files,
+            commands::reveal_file,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application");

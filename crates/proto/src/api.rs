@@ -23,6 +23,7 @@ pub struct Record {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ItemPayload {
     pub kind: ContentKind,
+    /// Texte, ou image PNG en base64 pour `ContentKind::Image`.
     pub text: String,
     pub device_name: String,
     /// Identifiant de l'appareil d'origine.
@@ -35,6 +36,7 @@ pub enum ContentKind {
     Text,
     Url,
     Code,
+    Image,
 }
 
 impl ContentKind {
@@ -43,6 +45,7 @@ impl ContentKind {
             ContentKind::Text => "text",
             ContentKind::Url => "url",
             ContentKind::Code => "code",
+            ContentKind::Image => "image",
         }
     }
 
@@ -50,6 +53,7 @@ impl ContentKind {
         match s {
             "url" => ContentKind::Url,
             "code" => ContentKind::Code,
+            "image" => ContentKind::Image,
             _ => ContentKind::Text,
         }
     }

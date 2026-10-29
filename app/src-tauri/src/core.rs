@@ -18,13 +18,15 @@ use mypress_proto::{
     crypto::{self, DeviceKey, GroupKeys},
 };
 
-use crate::store::{hash_text, now_ms, Applied, Row, Store};
+use crate::store::{hash_text, now_ms, Applied, Item, Row, Store};
 
 /// Liens avec l'interface et le système.
 pub trait Host: Send + Sync {
     fn history_changed(&self);
     fn status_changed(&self);
     fn write_clipboard(&self, text: &str) -> anyhow::Result<()>;
+    /// Image PNG en base64.
+    fn write_image(&self, png_b64: &str) -> anyhow::Result<()>;
 }
 
 /// Stockage des secrets de l'appareil (coffre du système en production).
@@ -76,7 +78,7 @@ pub struct Core {
     pub device_name: String,
     capture_paused: AtomicBool,
     sync_paused: AtomicBool,
-    /// Hachage du dernier texte écrit par l'application, pour ne pas le recapturer.
+    /// Hachage du dernier contenu écrit par l'application, pour ne pas le recapturer.
     self_written: Mutex<Option<String>>,
     /// Fenêtre active avant l'ouverture du panneau.
     pub prev_window: AtomicIsize,
@@ -369,6 +371,15 @@ impl Core {
 
     /// Appelé par la surveillance du presse-papiers.
     pub fn on_clipboard_text(&self, text: String) {
+        self.on_clipboard(ContentKind::detect(&text), text);
+    }
+
+    /// Image PNG en base64.
+    pub fn on_clipboard_image(&self, png_b64: String) {
+        self.on_clipboard(ContentKind::Image, png_b64);
+    }
+
+    fn on_clipboard(&self, kind: ContentKind, text: String) {
         if self.capture_paused() {
             return;
         }
@@ -381,7 +392,7 @@ impl Core {
             }
         }
         let limit = self.history_limit();
-        match self.with_store(|s| s.capture(&text, &self.device_id, &self.device_name, limit)) {
+        match self.with_store(|s| s.capture(&text, kind, &self.device_id, &self.device_name, limit)) {
             Ok(ids) => self.propagate(&ids),
             Err(e) => tracing::error!("enregistrement impossible : {e}"),
         }
@@ -401,8 +412,17 @@ impl Core {
     }
 
     pub fn write_clipboard(&self, text: &str) {
+        self.write(text, false);
+    }
+
+    pub fn write_item(&self, item: &Item) {
+        self.write(&item.text, item.kind == ContentKind::Image.as_str());
+    }
+
+    fn write(&self, text: &str, image: bool) {
         *self.self_written.lock().unwrap() = Some(hash_text(text));
-        if let Err(e) = self.host.write_clipboard(text) {
+        let res = if image { self.host.write_image(text) } else { self.host.write_clipboard(text) };
+        if let Err(e) = res {
             *self.self_written.lock().unwrap() = None;
             tracing::warn!("écriture du presse-papiers impossible : {e}");
         }
@@ -444,7 +464,7 @@ impl Core {
         // Le dernier élément vient d'arriver d'un autre appareil : Ctrl+V doit le coller.
         if let Some(latest) = self.with_store(|s| s.latest()) {
             if new_ids.contains(&latest.id) && latest.device_id != self.device_id {
-                self.write_clipboard(&latest.text);
+                self.write_item(&latest);
             }
         }
         if !from_mailbox {
@@ -482,9 +502,14 @@ impl Core {
         let mut invites = self.invites.lock().unwrap();
         invites.retain(|_, exp| *exp > now_ms());
         invites.insert(token_b64, now_ms() + 15 * 60 * 1000);
+        self.invite_code("MP1-", &token)
+    }
+
+    /// Code d'invitation : identifiant de cet appareil suivi du secret.
+    pub fn invite_code(&self, prefix: &str, token: &[u8]) -> String {
         let mut raw = self.iroh_key.public().as_bytes().to_vec();
-        raw.extend_from_slice(&token);
-        format!("MP1-{}", base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, raw))
+        raw.extend_from_slice(token);
+        format!("{prefix}{}", base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, raw))
     }
 
     pub fn consume_invite(&self, token: &str) -> bool {
@@ -494,7 +519,11 @@ impl Core {
 
 /// Décode un code d'invitation : (appareil invitant, secret).
 pub fn parse_invite(code: &str) -> anyhow::Result<(iroh::EndpointId, String)> {
-    let raw = code.trim().strip_prefix("MP1-").ok_or_else(|| anyhow::anyhow!("code d'invitation invalide"))?;
+    parse_code(code, "MP1-")
+}
+
+pub fn parse_code(code: &str, prefix: &str) -> anyhow::Result<(iroh::EndpointId, String)> {
+    let raw = code.trim().strip_prefix(prefix).ok_or_else(|| anyhow::anyhow!("code d'invitation invalide"))?;
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, raw)
         .map_err(|_| anyhow::anyhow!("code d'invitation invalide"))?;
     if bytes.len() != 48 {

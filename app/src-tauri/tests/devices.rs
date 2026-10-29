@@ -10,6 +10,7 @@ use iroh::{address_lookup::MemoryLookup, endpoint::presets, Endpoint, RelayMode}
 use mypress_lib::{
     core::{Core, Host, MailboxStatus, Secrets},
     mailbox, p2p,
+    share::{self, Share},
     store::Store,
 };
 
@@ -23,6 +24,10 @@ impl Host for TestHost {
     fn status_changed(&self) {}
     fn write_clipboard(&self, text: &str) -> anyhow::Result<()> {
         self.clipboard.lock().unwrap().push(text.to_string());
+        Ok(())
+    }
+    fn write_image(&self, png_b64: &str) -> anyhow::Result<()> {
+        self.clipboard.lock().unwrap().push(png_b64.to_string());
         Ok(())
     }
 }
@@ -43,6 +48,7 @@ impl Secrets for MemSecrets {
 struct Dev {
     core: Arc<Core>,
     host: Arc<TestHost>,
+    share: Arc<Share>,
 }
 
 impl Dev {
@@ -51,7 +57,7 @@ impl Dev {
         let core = Arc::new(Core::new(host.clone(), &MemSecrets::default(), Store::open_in_memory().unwrap(), name.into()).unwrap());
         let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(core.iroh_key.clone())
-            .alpns(vec![p2p::ALPN.to_vec()])
+            .alpns(vec![p2p::ALPN.to_vec(), share::ALPN.to_vec()])
             .relay_mode(RelayMode::Disabled)
             .address_lookup(lookup.clone())
             .bind_addr("127.0.0.1:0")
@@ -60,9 +66,11 @@ impl Dev {
             .await
             .unwrap();
         lookup.add_endpoint_info(endpoint.addr());
-        p2p::start(core.clone(), endpoint);
+        let dir = std::env::temp_dir().join(format!("mypress-test-{}", uuid::Uuid::now_v7()));
+        let share = Arc::new(Share::new(core.clone(), dir, || {}));
+        p2p::start(core.clone(), endpoint, Some(share.clone()));
         tokio::spawn(mailbox::run(core.clone()));
-        Dev { core, host }
+        Dev { core, host, share }
     }
 
     fn copy(&self, text: &str) {
@@ -124,6 +132,17 @@ async fn group_of_devices() {
     until("copie B → A", || a.has("ligne 1\nligne 2 — é")).await;
     until("presse-papiers de A", || a.host.clipboard.lock().unwrap().last().map(String::as_str) == Some("ligne 1\nligne 2 — é")).await;
     assert!(!b.texts().iter().filter(|t| t.starts_with("ligne 1")).nth(1).is_some(), "pas de doublon par écho");
+
+    // --- Image copiée sur B : collée telle quelle sur A, aperçu dans l'historique.
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(40, 30, image::Rgba([200, 30, 30, 255])).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let png = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, png.into_inner());
+    b.core.on_clipboard_image(png.clone());
+    until("image B → A", || a.host.clipboard.lock().unwrap().last() == Some(&png)).await;
+    let latest = a.core.with_store(|s| s.search("", 1)).unwrap().remove(0);
+    assert_eq!(latest.kind, "image");
+    assert!(!latest.text.is_empty() && latest.text != png, "aperçu à la place de l'image");
+    assert!(a.core.with_store(|s| s.search("a", 100)).unwrap().iter().all(|i| i.kind != "image"), "images hors recherche");
 
     // --- C rejoint via B ; tout le monde se connecte à tout le monde.
     p2p::join(c.core.clone(), &b.core.create_invite()).await.unwrap();
@@ -199,4 +218,44 @@ async fn group_of_devices() {
     assert!(b.core.notice.lock().unwrap().is_none());
     b.copy("fin");
     until("A reçoit encore de B", || a.has("fin")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn share_group_and_files() {
+    let lookup = MemoryLookup::new();
+    let a = Dev::new("PC Alice", &lookup).await;
+    let b = Dev::new("PC Bob", &lookup).await;
+    let c = Dev::new("PC Chloé", &lookup).await;
+
+    // Trois personnes, chacune avec ses propres appareils : aucun n'est associé.
+    let g = a.share.create_group("Équipe").unwrap();
+    b.share.join(&a.share.invite(&g.id).unwrap()).await.unwrap();
+    c.share.join(&a.share.invite(&g.id).unwrap()).await.unwrap();
+    until("3 membres partout", || [&a, &b, &c].iter().all(|d| d.share.groups().first().is_some_and(|g| g.members.len() == 3))).await;
+    assert!(a.core.group().members.len() == 1, "le presse-papiers reste séparé");
+
+    // Fichier envoyé au groupe : reçu à l'identique par les deux autres.
+    let src = std::env::temp_dir().join(format!("mypress-src-{}.bin", uuid::Uuid::now_v7()));
+    let data: Vec<u8> = (0..3_000_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    std::fs::write(&src, &data).unwrap();
+    assert_eq!(a.share.send_files(&g.id, std::slice::from_ref(&src)).await.unwrap(), (2, 2));
+    for d in [&b, &c] {
+        let t = d.share.transfers().remove(0);
+        assert!(t.incoming && t.peer == "PC Alice" && t.group == "Équipe");
+        assert_eq!(std::fs::read(&t.path).unwrap(), data);
+    }
+    // Même nom une seconde fois : pas d'écrasement.
+    a.share.send_files(&g.id, std::slice::from_ref(&src)).await.unwrap();
+    assert_ne!(b.share.transfers()[0].path, b.share.transfers()[1].path);
+
+    // Bob quitte : il ne reçoit plus rien.
+    b.share.leave(&g.id);
+    until("Bob retiré", || a.share.groups()[0].members.len() == 2 && c.share.groups()[0].members.len() == 2).await;
+    assert!(b.share.groups().is_empty());
+    assert_eq!(a.share.send_files(&g.id, std::slice::from_ref(&src)).await.unwrap(), (1, 1));
+
+    // « Mes appareils » : aucun autre appareil associé.
+    assert!(a.share.send_files(share::ME, std::slice::from_ref(&src)).await.is_err());
+    // Bob n'a plus le groupe.
+    assert!(b.share.send_files(&g.id, &[src]).await.is_err());
 }

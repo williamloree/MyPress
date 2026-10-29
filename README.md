@@ -46,13 +46,15 @@ héberger pour l'utiliser.
 
 ## Fonctionnalités
 
-- 📋 **Historique** des textes, liens et extraits de code copiés, avec recherche (insensible aux majuscules et aux accents).
+- 📋 **Historique** des textes, liens, extraits de code et images copiés, avec recherche (insensible aux majuscules et aux accents).
 - ⚡ **Panneau rapide** `Ctrl+Alt+V` : flèches pour choisir, `Entrée` colle directement dans l'application d'avant.
 - 🔄 **Synchronisation pair à pair** entre ordinateurs, même sur des réseaux différents. Copiez sur un PC,
   `Ctrl+V` sur l'autre.
 - 🔒 **Chiffrement de bout en bout** : seuls vos appareils peuvent lire votre historique.
 - ✈️ **Hors ligne d'abord** : tout est enregistré localement et rattrapé à la reconnexion.
 - 🕶️ **Vie privée** : copies des gestionnaires de mots de passe ignorées, mode privé, pause de la synchronisation.
+- 📁 **Envoi de fichiers** par glisser-déposer vers vos appareils ou un groupe, en direct et chiffré.
+- 👥 **Groupes de partage** avec d'autres personnes, séparés de votre presse-papiers : rien n'est partagé sans envoi explicite.
 - 🚀 **Mises à jour automatiques** et signées, depuis les releases GitHub.
 - 🎨 Taille d'historique au choix (50 à 1000), thème clair ou sombre, lancement au démarrage.
 

@@ -13,6 +13,7 @@ use crate::{
     clipboard,
     core::{Core, MailboxStatus},
     mailbox, p2p,
+    share::{Share, ShareGroup, Transfer},
     store::Item,
     View,
 };
@@ -118,7 +119,7 @@ pub fn search_history(core: State<Arc<Core>>, query: String) -> Res<Vec<Item>> {
 #[tauri::command]
 pub async fn paste_item(app: AppHandle, core: State<'_, Arc<Core>>, id: Uuid) -> Res<bool> {
     let item = core.with_store(|s| s.item(id)).ok_or("élément introuvable")?;
-    core.write_clipboard(&item.text);
+    core.write_item(&item);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
@@ -129,7 +130,7 @@ pub async fn paste_item(app: AppHandle, core: State<'_, Arc<Core>>, id: Uuid) ->
 #[tauri::command]
 pub fn copy_item(core: State<Arc<Core>>, id: Uuid) -> Res<()> {
     let item = core.with_store(|s| s.item(id)).ok_or("élément introuvable")?;
-    core.write_clipboard(&item.text);
+    core.write_item(&item);
     Ok(())
 }
 
@@ -206,4 +207,64 @@ pub fn hide_window(app: AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
+}
+
+// ---------- partage de fichiers ----------
+
+#[derive(Serialize)]
+pub struct ShareView {
+    groups: Vec<ShareGroup>,
+    transfers: Vec<Transfer>,
+    dir: String,
+    /// Nombre d'autres appareils dans « Mes appareils ».
+    own_devices: usize,
+}
+
+#[tauri::command]
+pub fn share_state(core: State<Arc<Core>>, share: State<Arc<Share>>) -> ShareView {
+    ShareView {
+        groups: share.groups(),
+        transfers: share.transfers(),
+        dir: share.dir.display().to_string(),
+        own_devices: core.group().members.len().saturating_sub(1),
+    }
+}
+
+#[tauri::command]
+pub fn create_share_group(share: State<Arc<Share>>, name: String) -> Res<ShareGroup> {
+    share.create_group(&name).map_err(err)
+}
+
+#[tauri::command]
+pub fn share_invite(share: State<Arc<Share>>, group: String) -> Res<String> {
+    share.invite(&group).map_err(err)
+}
+
+#[tauri::command]
+pub async fn join_share_group(share: State<'_, Arc<Share>>, code: String) -> Res<ShareGroup> {
+    share.join(&code).await.map_err(err)
+}
+
+#[tauri::command]
+pub fn leave_share_group(share: State<Arc<Share>>, group: String) {
+    share.leave(&group);
+}
+
+/// Retourne (destinataires atteints, destinataires).
+#[tauri::command]
+pub async fn send_files(share: State<'_, Arc<Share>>, target: String, paths: Vec<std::path::PathBuf>) -> Res<(usize, usize)> {
+    share.send_files(&target, &paths).await.map_err(err)
+}
+
+/// Montre un fichier dans l'explorateur du système.
+#[tauri::command]
+pub fn reveal_file(path: String) -> Res<()> {
+    let path = std::path::PathBuf::from(path);
+    #[cfg(windows)]
+    let res = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+    #[cfg(target_os = "macos")]
+    let res = std::process::Command::new("open").arg("-R").arg(&path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let res = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(&path)).spawn();
+    res.map(|_| ()).map_err(err)
 }

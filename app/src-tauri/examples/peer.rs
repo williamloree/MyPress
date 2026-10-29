@@ -19,6 +19,10 @@ impl Host for PrintHost {
         println!("[presse-papiers] {text:?}");
         Ok(())
     }
+    fn write_image(&self, png_b64: &str) -> anyhow::Result<()> {
+        println!("[presse-papiers] image de {} octets (base64)", png_b64.len());
+        Ok(())
+    }
 }
 
 struct NoSecrets;
@@ -42,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
         .alpns(vec![p2p::ALPN.to_vec()])
         .bind()
         .await?;
-    p2p::start(core.clone(), endpoint);
+    p2p::start(core.clone(), endpoint, None);
 
     p2p::join(core.clone(), code).await?;
     println!("associé : {} membres", core.group().members.len());

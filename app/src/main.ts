@@ -1,12 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 interface Item {
   id: string;
   created_at: number;
   device_id: string;
   device_name: string;
-  kind: "text" | "url" | "code";
+  kind: "text" | "url" | "code" | "image";
+  /** Pour une image : aperçu PNG en base64. */
   text: string;
 }
 
@@ -33,12 +35,39 @@ interface AppState {
   autostart: boolean;
 }
 
+interface ShareGroup {
+  id: string;
+  name: string;
+  members: { id: string; name: string }[];
+}
+
+interface Transfer {
+  created_at: number;
+  incoming: boolean;
+  group: string;
+  peer: string;
+  name: string;
+  size: number;
+  path: string;
+}
+
+interface ShareState {
+  groups: ShareGroup[];
+  transfers: Transfer[];
+  dir: string;
+  own_devices: number;
+}
+
+type View = "history" | "settings" | "share";
+
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 let items: Item[] = [];
 let selected = 0;
 let state: AppState;
-let view: "history" | "settings" = "history";
+let view: View = "history";
+let share: ShareState | undefined;
+let sending = false;
 
 // ---------- utilitaires ----------
 
@@ -60,7 +89,7 @@ function ago(ms: number): string {
   return `${d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })} ${time}`;
 }
 
-const KIND_LABEL = { text: "Texte", url: "URL", code: "Code" } as const;
+const KIND_LABEL = { text: "Texte", url: "URL", code: "Code", image: "Image" } as const;
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T | undefined> {
   try {
@@ -99,9 +128,17 @@ function render() {
       li.setAttribute("role", "option");
       li.setAttribute("aria-selected", String(i === selected));
 
-      const text = document.createElement("div");
+      let text: HTMLElement;
+      if (it.kind === "image") {
+        const img = document.createElement("img");
+        img.src = `data:image/png;base64,${it.text}`;
+        img.alt = "Image copiée";
+        text = img;
+      } else {
+        text = document.createElement("div");
+        text.textContent = it.text.length > 600 ? it.text.slice(0, 600) + "…" : it.text;
+      }
       text.className = "text";
-      text.textContent = it.text.length > 600 ? it.text.slice(0, 600) + "…" : it.text;
 
       const meta = document.createElement("span");
       meta.className = "meta";
@@ -143,7 +180,7 @@ $("search").addEventListener("input", () => { selected = 0; refresh(); });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     e.preventDefault();
-    if (view === "settings") showView("history");
+    if (view !== "history") showView("history");
     else invoke("hide_window");
     return;
   }
@@ -153,6 +190,132 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "ArrowUp") { selected = Math.max(selected - 1, 0); render(); e.preventDefault(); }
   else if (e.key === "Enter" && it) { e.preventDefault(); paste(it); }
   else if (e.key === "Delete" && it && !$<HTMLInputElement>("search").value) { e.preventDefault(); call("delete_item", { id: it.id }); }
+});
+
+// ---------- fichiers et groupes de partage ----------
+
+function size(n: number): string {
+  if (n < 1024) return `${n} o`;
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(0)} Ko`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} Mo`;
+  return `${(n / 1024 ** 3).toFixed(2)} Go`;
+}
+
+function entry(title: string, detail: string, ...buttons: HTMLButtonElement[]): HTMLLIElement {
+  const li = document.createElement("li");
+  const div = document.createElement("div");
+  const b = document.createElement("b");
+  b.textContent = title;
+  b.title = title;
+  const small = document.createElement("small");
+  small.textContent = detail;
+  div.append(b, small);
+  li.append(div, ...buttons);
+  return li;
+}
+
+function button(label: string, onclick: (b: HTMLButtonElement) => void, cls = ""): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.className = cls;
+  b.onclick = () => onclick(b);
+  return b;
+}
+
+async function loadShare() {
+  share = await call<ShareState>("share_state");
+  if (share && view === "share") renderShare();
+}
+
+function renderShare() {
+  const s = share!;
+  const target = $<HTMLSelectElement>("target");
+  const current = target.value || "me";
+  target.replaceChildren(
+    new Option(`Mes appareils (${s.own_devices})`, "me"),
+    ...s.groups.map((g) => new Option(`${g.name} (${g.members.length - 1})`, g.id)),
+  );
+  target.value = [...target.options].some((o) => o.value === current) ? current : "me";
+  $("received-dir").textContent = s.dir;
+
+  $("transfers").replaceChildren(
+    ...s.transfers.map((t) =>
+      entry(
+        t.name,
+        `${t.incoming ? "Reçu de" : "Envoyé à"} ${t.peer} · ${t.group} · ${size(t.size)} · ${ago(t.created_at)}`,
+        button("Afficher", () => call("reveal_file", { path: t.path })),
+      ),
+    ),
+  );
+  $("no-transfer").hidden = s.transfers.length > 0;
+
+  $("share-groups").replaceChildren(
+    ...s.groups.map((g) =>
+      entry(
+        g.name,
+        g.members.map((m) => (m.id === state?.device_id ? "vous" : m.name)).join(", "),
+        button("Inviter", async () => {
+          const code = await call<string>("share_invite", { group: g.id });
+          if (!code) return;
+          $<HTMLTextAreaElement>("share-invite-code").value = code;
+          $("share-invite-box").hidden = false;
+        }),
+        button("Quitter", (b) => { if (confirmTwice(b)) call("leave_share_group", { group: g.id }); }, "danger"),
+      ),
+    ),
+  );
+}
+
+async function sendFiles(paths: string[]) {
+  if (sending || !paths.length) return;
+  const drop = $("drop");
+  sending = true;
+  drop.classList.add("busy");
+  drop.textContent = `Envoi de ${paths.length} fichier${paths.length > 1 ? "s" : ""}…`;
+  const res = await call<[number, number]>("send_files", { target: $<HTMLSelectElement>("target").value, paths });
+  sending = false;
+  drop.classList.remove("busy");
+  drop.textContent = "Glissez des fichiers ici";
+  if (res) toast(res[0] === res[1] ? "Envoyé" : `Envoyé à ${res[0]} sur ${res[1]} : les autres sont injoignables`);
+}
+
+// Un fichier glissé sur la fenêtre ouvre la vue d'envoi ; le déposer l'envoie.
+getCurrentWebview().onDragDropEvent((e) => {
+  const drop = $("drop");
+  if (e.payload.type === "enter") {
+    if (view !== "share") showView("share");
+    drop.classList.add("over");
+  } else if (e.payload.type === "leave") {
+    drop.classList.remove("over");
+  } else if (e.payload.type === "drop") {
+    drop.classList.remove("over");
+    sendFiles(e.payload.paths);
+  }
+});
+
+$("copy-share-invite").onclick = async () => {
+  await call("copy_text", { text: $<HTMLTextAreaElement>("share-invite-code").value });
+  toast("Code copié");
+};
+
+$<HTMLFormElement>("create-group").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $<HTMLInputElement>("group-name");
+  if (await call("create_share_group", { name: input.value })) {
+    input.value = "";
+    toast("Groupe créé : invitez des membres");
+  }
+});
+
+$<HTMLFormElement>("join-group").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $<HTMLInputElement>("join-group-code");
+  const g = await call<ShareGroup>("join_share_group", { code: input.value });
+  if (g) {
+    input.value = "";
+    ($("join-group-box") as HTMLDetailsElement).open = false;
+    toast(`Vous avez rejoint « ${g.name} »`);
+  }
 });
 
 // ---------- état et paramètres ----------
@@ -284,17 +447,21 @@ $<HTMLInputElement>("autostart").onchange = async (e) => {
   loadState();
 };
 
-function showView(v: "history" | "settings") {
+function showView(v: View) {
   view = v;
   invoke("set_view", { name: v });
   $("history").hidden = v !== "history";
   $("settings").hidden = v !== "settings";
+  $("share").hidden = v !== "share";
   if (v === "history") {
     const search = $<HTMLInputElement>("search");
     search.value = "";
     selected = 0;
     refresh();
     search.focus();
+  } else if (v === "share") {
+    $("share-invite-box").hidden = true;
+    loadShare();
   } else {
     $("invite-box").hidden = true;
     $("join-error").hidden = true;
@@ -303,10 +470,14 @@ function showView(v: "history" | "settings") {
 }
 
 $("open-settings").onclick = () => showView("settings");
+$("open-share").onclick = () => showView("share");
+$("share-back").onclick = () => showView("history");
+$("share-close").onclick = () => invoke("hide_window");
 $("back").onclick = () => showView("history");
 $("close").onclick = () => invoke("hide_window");
 
-listen<string>("show-view", (e) => { loadState(); showView(e.payload as "history" | "settings"); });
+listen<string>("show-view", (e) => { loadState(); showView(e.payload as View); });
+listen("shares-changed", () => loadShare());
 listen("history-changed", () => { if (view === "history") refresh(); });
 listen("status-changed", () => loadState());
 

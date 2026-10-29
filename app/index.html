@@ -16,6 +16,7 @@
       <footer class="bar foot" data-tauri-drag-region>
         <span id="status" class="status"><i></i><span></span></span>
         <span class="hint">↑↓ choisir · Entrée coller · Suppr effacer · Échap fermer</span>
+        <button id="open-share" class="icon" title="Envoyer des fichiers" aria-label="Envoyer des fichiers">⇪</button>
         <button id="open-settings" class="icon" title="Paramètres" aria-label="Paramètres">⚙</button>
       </footer>
     </section>
@@ -67,6 +68,43 @@
         <label class="inline"><input id="autostart" type="checkbox" /> Lancer au démarrage de l'ordinateur</label>
 
         <p class="note">Raccourci : <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>V</kbd>. Mode privé et pause de la synchronisation : menu de l'icône dans la barre des tâches.</p>
+      </div>
+    </section>
+
+    <section id="share" class="view" hidden>
+      <header class="bar" data-tauri-drag-region>
+        <button id="share-back" class="icon" title="Retour à l'historique" aria-label="Retour">←</button>
+        <h1 data-tauri-drag-region>Fichiers et groupes</h1>
+        <button id="share-close" class="icon" title="Fermer" aria-label="Fermer">✕</button>
+      </header>
+      <div class="scroll">
+        <label class="inline">Envoyer à <select id="target"></select></label>
+        <div id="drop" class="drop">Glissez des fichiers ici</div>
+        <p class="note">Envoi direct et chiffré aux appareils allumés. Fichiers reçus dans <span id="received-dir"></span>.</p>
+
+        <h2>Transferts récents</h2>
+        <ul id="transfers"></ul>
+        <p id="no-transfer" class="muted">Aucun fichier envoyé ou reçu.</p>
+
+        <h2>Groupes de partage</h2>
+        <p class="note">Pour échanger des fichiers avec d'autres personnes. Indépendant de la synchronisation du presse-papiers : rien n'est partagé sans envoi explicite.</p>
+        <ul id="share-groups"></ul>
+        <div id="share-invite-box" hidden>
+          <p class="note">À coller par l'autre personne dans « Rejoindre un groupe ». Valable 15 minutes, une seule fois ; cet ordinateur doit rester allumé.</p>
+          <textarea id="share-invite-code" readonly rows="2"></textarea>
+          <button id="copy-share-invite">Copier le code</button>
+        </div>
+        <form id="create-group" class="row">
+          <input id="group-name" placeholder="Nom du nouveau groupe" autocomplete="off" />
+          <button type="submit">Créer</button>
+        </form>
+        <details id="join-group-box">
+          <summary>Rejoindre un groupe</summary>
+          <form id="join-group" class="row">
+            <input id="join-group-code" placeholder="MPG1-…" autocomplete="off" spellcheck="false" />
+            <button type="submit">Rejoindre</button>
+          </form>
+        </details>
       </div>
     </section>
 

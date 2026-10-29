@@ -15,6 +15,9 @@ use mypress_proto::{
 
 use crate::core::{Core, MailboxStatus, PendingRekey};
 
+/// Taille cible d'un envoi d'éléments à la boîte aux lettres.
+const PUSH_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Debug)]
 enum MbError {
     /// Le groupe a changé de clé : voir le message de renouvellement.
@@ -218,7 +221,18 @@ async fn sync_once(core: &Core, api: &Api, keys: &GroupKeys) -> Result<(), MbErr
         if rows.is_empty() {
             break;
         }
-        let records: Vec<Record> = rows.iter().map(|r| core.record_of(r, keys)).collect();
+        // Lots bornés en octets (images) : la boîte refuse les requêtes de plus de 16 Mo.
+        let mut size = 0;
+        let records: Vec<Record> = rows
+            .iter()
+            .map(|r| core.record_of(r, keys))
+            .take_while(|r| {
+                let first = size == 0;
+                size += r.blob.as_ref().map_or(0, |b| b.len()) + 100;
+                first || size <= PUSH_BYTES
+            })
+            .collect();
+        let rows = &rows[..records.len()];
         api.put("/records", &PushRecords { records }).await?;
         let ids: Vec<Uuid> = rows.iter().map(|r| r.item.id).collect();
         core.with_store(|s| s.mark_synced(&ids)).map_err(anyhow::Error::from)?;

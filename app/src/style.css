@@ -84,6 +84,7 @@ button.icon { border: none; background: transparent; padding: 4px 8px; font-size
 }
 #list .code .text { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
 #list .url .text { color: var(--accent); }
+#list img.text { display: block; max-width: 100%; max-height: 80px; border-radius: 4px; background: repeating-conic-gradient(var(--bg-2) 0 25%, var(--bg) 0 50%) 0 0 / 12px 12px; }
 #list .meta { font-size: 11px; color: var(--muted); }
 #list .actions { font-size: 11px; visibility: hidden; }
 #list li.sel .actions, #list li:hover .actions { visibility: visible; }
@@ -124,3 +125,18 @@ summary { cursor: pointer; color: var(--accent); }
   position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
   background: var(--fg); color: var(--bg); padding: 6px 12px; border-radius: 6px; font-size: 12px;
 }
+
+.drop {
+  display: flex; align-items: center; justify-content: center; height: 90px; margin-bottom: 6px;
+  border: 2px dashed var(--line); border-radius: 8px; color: var(--muted);
+}
+.drop.over { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
+.drop.busy { border-style: solid; }
+#transfers, #share-groups { list-style: none; padding: 0; margin: 0 0 10px; }
+#transfers li, #share-groups li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+#transfers li div, #share-groups li div { flex: 1; min-width: 0; }
+#transfers b, #share-groups b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#transfers small, #share-groups small { color: var(--muted); }
+#share-invite-code { width: 100%; font: 12px Consolas, monospace; resize: none; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2); color: var(--fg); word-break: break-all; }
+#group-name, #join-group-code { flex: 1; }
+#create-group { margin-top: 10px; }
