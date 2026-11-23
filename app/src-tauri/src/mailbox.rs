@@ -120,12 +120,28 @@ async fn post_pending_rekey(core: &Core) -> anyhow::Result<()> {
     let p: PendingRekey = serde_json::from_str(&raw)?;
     let api = Api::new(&p.url, &p.mailbox_id, &p.secret);
     match api.put("/rekey", &p.body).await {
-        Ok(()) | Err(MbError::Gone) => {
-            core.with_store(|s| s.delete_kv("pending_rekey"));
-            Ok(())
-        }
-        Err(MbError::Other(e)) => Err(e),
+        Ok(()) | Err(MbError::Gone) => {}
+        Err(MbError::Other(e)) => return Err(e),
     }
+    // L'espace du coffre est vidé et figé de la même façon (aucune clé à y transmettre).
+    if !p.vault_mailbox_id.is_empty() {
+        let vapi = Api::new(&p.url, &p.vault_mailbox_id, &p.vault_secret);
+        match vapi.put("/rekey", &Rekey { wrapped: vec![] }).await {
+            Ok(()) | Err(MbError::Gone) => {}
+            Err(MbError::Other(e)) => return Err(e),
+        }
+    }
+    core.with_store(|s| s.delete_kv("pending_rekey"));
+    Ok(())
+}
+
+type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn connect_ws(api: &Api) -> anyhow::Result<Ws> {
+    let ws_url = format!("{}/ws", api.base.replacen("http", "ws", 1));
+    let mut req = ws_url.into_client_request()?;
+    req.headers_mut().insert("Authorization", format!("Bearer {}", api.secret).parse()?);
+    Ok(tokio_tungstenite::connect_async(req).await?.0)
 }
 
 /// Le groupe a été renouvelé : on récupère la nouvelle clé qui nous est destinée.
@@ -148,16 +164,15 @@ async fn follow_rekey(core: &Core, api: &Api, session_epoch: u32) -> anyhow::Res
 async fn session(core: &Arc<Core>, url: &str, group: &GroupState, rev: &mut tokio::sync::watch::Receiver<u64>) -> anyhow::Result<()> {
     let keys = GroupKeys::from_state(group)?;
     let api = Api::new(url, &keys.mailbox_id, &keys.mailbox_secret);
+    let vapi = Api::new(url, &keys.vault_mailbox_id, &keys.vault_mailbox_secret);
     post_pending_rekey(core).await?;
 
-    let ws_url = format!("{}/ws", api.base.replacen("http", "ws", 1));
-    let mut req = ws_url.into_client_request()?;
-    req.headers_mut().insert("Authorization", format!("Bearer {}", keys.mailbox_secret).parse()?);
-    let (mut ws, _) = tokio_tungstenite::connect_async(req).await?;
+    // Notifications de l'historique et du coffre sur un même flux.
+    let mut ws = futures_util::stream::select(connect_ws(&api).await?, connect_ws(&vapi).await?);
 
     macro_rules! sync {
         () => {
-            match sync_once(core, &api, &keys).await {
+            match sync_once(core, &api, &vapi, &keys).await {
                 Ok(()) => {}
                 Err(MbError::Gone) => return follow_rekey(core, &api, group.epoch).await,
                 Err(MbError::Other(e)) => return Err(e),
@@ -200,7 +215,7 @@ async fn session(core: &Arc<Core>, url: &str, group: &GroupState, rev: &mut toki
     }
 }
 
-async fn sync_once(core: &Core, api: &Api, keys: &GroupKeys) -> Result<(), MbError> {
+async fn sync_once(core: &Core, api: &Api, vapi: &Api, keys: &GroupKeys) -> Result<(), MbError> {
     // 1. État du groupe : on adopte le plus récent, on publie le nôtre s'il l'est.
     let remote: Option<StateBlob> = api.get("/state").await?;
     if let Some(s) = &remote {
@@ -245,6 +260,28 @@ async fn sync_once(core: &Core, api: &Api, keys: &GroupKeys) -> Result<(), MbErr
         let Some(page) = api.get::<PullResponse>(&format!("/records?since={since}")).await? else { break };
         let records: Vec<Record> = page.records.into_iter().map(|r| r.record).collect();
         core.apply_records(&records, true);
+        core.with_store(|s| s.set(&seq_key, &page.max_seq.to_string()));
+        if !page.more {
+            break;
+        }
+    }
+
+    // 4. Coffre, dans son propre espace : révisions déjà chiffrées, envoyées telles quelles.
+    loop {
+        let records = core.with_store(|s| s.vault_unsynced(200)).map_err(anyhow::Error::from)?;
+        if records.is_empty() {
+            break;
+        }
+        let ids: Vec<Uuid> = records.iter().map(|r| r.id).collect();
+        vapi.put("/records", &PushRecords { records }).await?;
+        core.with_store(|s| s.vault_mark_synced(&ids)).map_err(anyhow::Error::from)?;
+    }
+    let seq_key = format!("mailbox_seq:{}", keys.vault_mailbox_id);
+    loop {
+        let since: i64 = core.with_store(|s| s.get(&seq_key)).and_then(|v| v.parse().ok()).unwrap_or(0);
+        let Some(page) = vapi.get::<PullResponse>(&format!("/records?since={since}")).await? else { break };
+        let records: Vec<Record> = page.records.into_iter().map(|r| r.record).collect();
+        core.apply_vault_records(&records, true);
         core.with_store(|s| s.set(&seq_key, &page.max_seq.to_string()));
         if !page.more {
             break;

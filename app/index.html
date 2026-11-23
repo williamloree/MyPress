@@ -16,6 +16,7 @@
       <footer class="bar foot" data-tauri-drag-region>
         <span id="status" class="status"><i></i><span></span></span>
         <span class="hint">↑↓ choisir · Entrée coller · Suppr effacer · Échap fermer</span>
+        <button id="open-vault" class="icon" title="Coffre de mots de passe" aria-label="Coffre de mots de passe">🔑</button>
         <button id="open-share" class="icon" title="Envoyer des fichiers" aria-label="Envoyer des fichiers">⇪</button>
         <button id="open-settings" class="icon" title="Paramètres" aria-label="Paramètres">⚙</button>
       </footer>
@@ -111,6 +112,67 @@
           </form>
         </details>
       </div>
+    </section>
+
+    <section id="vault" class="view" hidden>
+      <header class="bar" data-tauri-drag-region>
+        <button id="vault-back" class="icon" title="Retour à l'historique" aria-label="Retour">←</button>
+        <h1 data-tauri-drag-region>Coffre de mots de passe</h1>
+        <button id="vault-lock" class="icon" title="Verrouiller le coffre" aria-label="Verrouiller" hidden>🔒</button>
+        <button id="vault-close" class="icon" title="Fermer" aria-label="Fermer">✕</button>
+      </header>
+
+      <form id="vault-unlock" class="scroll" hidden>
+        <p class="note">Le coffre est verrouillé. Sa phrase de passe est la même sur tous vos appareils.</p>
+        <div class="row">
+          <input id="vault-passphrase" type="password" placeholder="Phrase de passe" autocomplete="current-password" />
+          <button type="submit" class="primary">Déverrouiller</button>
+        </div>
+        <p id="vault-unlock-error" class="error" hidden></p>
+      </form>
+
+      <div id="vault-main" hidden>
+        <div class="bar">
+          <input id="vault-search" type="search" placeholder="Rechercher dans le coffre…" autocomplete="off" spellcheck="false" />
+          <button id="vault-new" class="primary">Nouvelle entrée</button>
+        </div>
+        <div class="scroll">
+          <ul id="vault-list"></ul>
+          <p id="vault-empty" class="muted" hidden></p>
+
+          <h2>Sécurité</h2>
+          <p id="vault-security" class="note"></p>
+          <form id="vault-pass-form" class="row">
+            <input id="vault-new-pass" type="password" placeholder="Nouvelle phrase de passe" autocomplete="new-password" />
+            <input id="vault-new-pass2" type="password" placeholder="Confirmation" autocomplete="new-password" />
+            <button type="submit">Enregistrer</button>
+          </form>
+          <button id="vault-remove-pass" class="danger" hidden>Retirer la phrase de passe</button>
+          <label id="vault-auto-lock-label" class="inline">Verrouiller après <select id="vault-auto-lock"></select></label>
+          <p class="note">Les entrées sont chiffrées sur le disque, entre vos appareils et dans la boîte aux lettres. Un mot de passe copié n'entre pas dans l'historique et s'efface du presse-papiers après 30 secondes.</p>
+        </div>
+      </div>
+
+      <form id="vault-form" class="scroll" hidden>
+        <label>Nom <input id="vf-name" autocomplete="off" required /></label>
+        <label>Adresse <input id="vf-url" type="url" placeholder="https://…" autocomplete="off" spellcheck="false" /></label>
+        <label>Identifiant <input id="vf-username" autocomplete="off" spellcheck="false" /></label>
+        <label>Mot de passe
+          <span class="row">
+            <input id="vf-password" type="password" autocomplete="off" spellcheck="false" />
+            <button type="button" id="vf-show" title="Afficher le mot de passe">Afficher</button>
+            <button type="button" id="vf-generate" title="Générer un mot de passe aléatoire">Générer</button>
+          </span>
+        </label>
+        <label>Notes <textarea id="vf-notes" rows="4"></textarea></label>
+        <p id="vf-meta" class="note"></p>
+        <div class="row">
+          <button type="submit" class="primary">Enregistrer</button>
+          <button type="button" id="vf-cancel">Annuler</button>
+          <span class="spacer"></span>
+          <button type="button" id="vf-delete" class="danger">Supprimer</button>
+        </div>
+      </form>
     </section>
 
     <div id="toast" class="toast" hidden></div>

@@ -34,6 +34,34 @@ pub fn write_text(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Texte marqué pour les historiques de presse-papiers (MyPress, Windows, gestionnaires
+/// tiers) comme à ne pas enregistrer ni synchroniser, comme le font KeePass ou Bitwarden.
+pub fn write_secret(text: &str) -> anyhow::Result<()> {
+    let mut clipboard = arboard::Clipboard::new()?;
+    #[cfg(windows)]
+    {
+        use arboard::SetExtWindows;
+        clipboard.set().exclude_from_monitoring().text(text.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use arboard::SetExtApple;
+        clipboard.set().exclude_from_history().text(text.to_string())?;
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    clipboard.set_text(text.to_string())?;
+    Ok(())
+}
+
+/// Vide le presse-papiers s'il contient encore `text` (rien n'a été copié depuis).
+pub fn clear_if(text: &str) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        if clipboard.get_text().is_ok_and(|t| t == text) {
+            let _ = clipboard.clear();
+        }
+    }
+}
+
 fn read_rgba() -> Option<RgbaImage> {
     let img = arboard::Clipboard::new().ok()?.get_image().ok()?;
     RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.into_owned())

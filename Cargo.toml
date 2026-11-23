@@ -24,3 +24,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lto = true
 codegen-units = 1
 strip = true
+
+# Argon2id (phrase de passe du coffre) : lent sans optimisation, y compris en test.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

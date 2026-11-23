@@ -5,6 +5,7 @@ pub mod mailbox;
 pub mod p2p;
 pub mod share;
 pub mod store;
+pub mod vault;
 
 use std::sync::{atomic::Ordering, Arc, Mutex};
 
@@ -55,6 +56,15 @@ impl Host for TauriHost {
     }
     fn write_image(&self, png_b64: &str) -> anyhow::Result<()> {
         clipboard::write_image(png_b64)
+    }
+    fn vault_changed(&self) {
+        let _ = self.0.emit("vault-changed", ());
+    }
+    fn write_secret(&self, text: &str) -> anyhow::Result<()> {
+        clipboard::write_secret(text)
+    }
+    fn clear_secret(&self, text: &str) {
+        clipboard::clear_if(text);
     }
 }
 
@@ -122,11 +132,16 @@ fn build_tray(app: &tauri::App, core: &Arc<Core>) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", commands::status(core).1, false, None::<&str>)?;
     let capture = CheckMenuItem::with_id(app, "capture", "Mode privé (ne rien enregistrer)", true, core.capture_paused(), None::<&str>)?;
     let sync = CheckMenuItem::with_id(app, "sync", "Suspendre la synchronisation", true, core.sync_paused(), None::<&str>)?;
+    let vault = MenuItem::with_id(app, "vault", "Coffre de mots de passe…", true, None::<&str>)?;
+    let lock = MenuItem::with_id(app, "lock", "Verrouiller le coffre", true, None::<&str>)?;
     let share = MenuItem::with_id(app, "share", "Envoyer des fichiers…", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Appareils et paramètres…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, None::<&str>)?;
     let sep = || PredefinedMenuItem::separator(app);
-    let menu = Menu::with_items(app, &[&open, &sep()?, &status, &capture, &sync, &sep()?, &share, &settings, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&open, &sep()?, &status, &capture, &sync, &sep()?, &vault, &lock, &sep()?, &share, &settings, &quit],
+    )?;
 
     let handle = app.handle().clone();
     app.listen("status-changed", move |_| {
@@ -145,6 +160,8 @@ fn build_tray(app: &tauri::App, core: &Arc<Core>) -> tauri::Result<()> {
                 "open" => show_view(app, "history"),
                 "settings" => show_view(app, "settings"),
                 "share" => show_view(app, "share"),
+                "vault" => show_view(app, "vault"),
+                "lock" => core.vault_lock(),
                 "capture" => core.set_capture_paused(capture.is_checked().unwrap_or(false)),
                 "sync" => core.set_sync_paused(sync.is_checked().unwrap_or(false)),
                 "quit" => app.exit(0),
@@ -256,6 +273,13 @@ pub fn run() {
             app.manage(share.clone());
 
             build_tray(app, &core)?;
+            let c = core.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    c.vault_auto_lock();
+                }
+            });
             let updates = app.state::<Arc<Updates>>().inner().clone();
             tauri::async_runtime::spawn(auto_update(app.handle().clone(), updates));
 
@@ -336,6 +360,16 @@ pub fn run() {
             commands::leave_share_group,
             commands::send_files,
             commands::reveal_file,
+            commands::vault_status,
+            commands::vault_list,
+            commands::vault_entry,
+            commands::vault_save,
+            commands::vault_delete,
+            commands::vault_copy,
+            commands::vault_unlock,
+            commands::vault_lock,
+            commands::vault_set_passphrase,
+            commands::vault_set_auto_lock,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application");

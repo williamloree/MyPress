@@ -53,6 +53,8 @@ héberger pour l'utiliser.
 - 🔒 **Chiffrement de bout en bout** : seuls vos appareils peuvent lire votre historique.
 - ✈️ **Hors ligne d'abord** : tout est enregistré localement et rattrapé à la reconnexion.
 - 🕶️ **Vie privée** : copies des gestionnaires de mots de passe ignorées, mode privé, pause de la synchronisation.
+- 🔑 **Coffre de mots de passe** synchronisé entre vos appareils, avec phrase de passe optionnelle, verrouillage
+  automatique et générateur ; un mot de passe copié n'entre dans aucun historique et s'efface après 30 secondes.
 - 📁 **Envoi de fichiers** par glisser-déposer vers vos appareils ou un groupe, en direct et chiffré.
 - 👥 **Groupes de partage** avec d'autres personnes, séparés de votre presse-papiers : rien n'est partagé sans envoi explicite.
 - 🚀 **Mises à jour automatiques** et signées, depuis les releases GitHub.
@@ -125,6 +127,10 @@ rallumé récupère aussi ce qui a été copié pendant son absence. C'est un pe
   que du contenu chiffré et un secret d'accès qui ne permet pas de déchiffrer.
 - **Retrait d'un appareil.** Nouvelle clé de groupe, transmise aux appareils restants en P2P et via la boîte
   aux lettres (chiffrée pour chacun avec X25519).
+- **Coffre.** Clés aléatoires propres au coffre, partagées par les appareils du groupe ; avec une phrase de passe,
+  elles sont scellées par Argon2id. Chaque modification d'une entrée crée une révision chiffrée qui circule
+  comme l'historique (dans un espace séparé de la boîte aux lettres) ; la plus récente l'emporte. Retirer un
+  appareil ajoute une clé et rechiffre les entrées.
 - **Stockage.** Clés de l'appareil dans le coffre du système (Gestionnaire d'identification Windows, Trousseau
   macOS, Secret Service) ; historique dans une base SQLite locale.
 
@@ -148,7 +154,7 @@ pnpm tauri dev
 
 **Tests** : `cargo test --workspace`. [`app/src-tauri/tests/devices.rs`](app/src-tauri/tests/devices.rs) fait
 tourner trois appareils et une boîte aux lettres dans un même processus : association, fusion, suppression,
-coupure, boîte aux lettres, retrait d'appareil.
+coupure, boîte aux lettres, retrait d'appareil, coffre de mots de passe.
 
 **Second appareil en ligne de commande** (vrai réseau iroh), pratique pour tester :
 
@@ -185,6 +191,9 @@ Elle garde au plus 1000 éléments par groupe et les marqueurs de suppression 60
 - [x] Synchronisation pair à pair chiffrée de bout en bout
 - [x] Boîte aux lettres optionnelle auto-hébergée
 - [x] Installateurs Windows, macOS, Linux et mises à jour automatiques
+- [x] Coffre de mots de passe personnel
+- [ ] Partage d'entrées du coffre avec les groupes de partage, droits par entrée
+- [ ] Import (CSV, KeePass, Passbolt), codes TOTP
 - [ ] Images, texte enrichi et fichiers
 - [ ] Collage automatique sous macOS et Linux
 - [ ] Raccourci personnalisable
@@ -200,6 +209,9 @@ Elle garde au plus 1000 éléments par groupe et les marqueurs de suppression 60
 - Tout membre du groupe peut ajouter ou retirer des appareils. Un appareil retiré pourrait encore tromper un
   membre qui n'a pas appris la révocation, ou vider l'ancienne boîte aux lettres.
 - L'ordre de l'historique se base sur l'horloge de chaque ordinateur.
+- Coffre : un appareil retiré garde ce qu'il a déjà lu ; changez les mots de passe sensibles après un retrait.
+  Deux modifications simultanées d'une même entrée : la plus récente l'emporte, l'autre est perdue. La boîte aux
+  lettres garde au plus 1000 entrées du coffre.
 
 ## Contribuer
 

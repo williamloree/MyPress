@@ -6,6 +6,10 @@
 //!
 //! Chaque appareil possède aussi une paire X25519 : lors d'une révocation, la nouvelle clé
 //! de groupe est chiffrée séparément pour chaque appareil restant.
+//!
+//! Le coffre de mots de passe a ses propres clés aléatoires (voir [`crate::api::VaultKeys`]),
+//! éventuellement scellées par une phrase de passe (Argon2id). Ses révisions restent
+//! chiffrées partout : sur le disque, en P2P et dans la boîte aux lettres.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use chacha20poly1305::{
@@ -18,7 +22,7 @@ use sha2::Sha256;
 use uuid::Uuid;
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
 
-use crate::api::{GroupState, ItemPayload};
+use crate::api::{GroupState, ItemPayload, VaultPayload};
 
 const NONCE_LEN: usize = 24;
 
@@ -52,6 +56,10 @@ pub struct GroupKeys {
     pub mailbox_id: String,
     /// Secret d'accès à la boîte aux lettres (base64).
     pub mailbox_secret: String,
+    /// Espace séparé de la boîte aux lettres pour le coffre : ses révisions ne
+    /// comptent pas dans la limite de l'historique.
+    pub vault_mailbox_id: String,
+    pub vault_mailbox_secret: String,
 }
 
 impl GroupKeys {
@@ -62,11 +70,13 @@ impl GroupKeys {
             hk.expand(info, &mut out).expect("longueur HKDF valide");
             out
         };
-        let id = expand(b"mypress mailbox-id v1");
+        let hex = |b: [u8; 32]| b.iter().map(|b| format!("{b:02x}")).collect();
         Self {
             enc_key: expand(b"mypress enc v1"),
-            mailbox_id: id.iter().map(|b| format!("{b:02x}")).collect(),
+            mailbox_id: hex(expand(b"mypress mailbox-id v1")),
             mailbox_secret: b64(&expand(b"mypress mailbox-auth v1")),
+            vault_mailbox_id: hex(expand(b"mypress vault mailbox-id v1")),
+            vault_mailbox_secret: b64(&expand(b"mypress vault mailbox-auth v1")),
         }
     }
 
@@ -75,7 +85,8 @@ impl GroupKeys {
     }
 }
 
-fn seal(key: &[u8; 32], aad: &[u8], plain: &[u8]) -> String {
+/// Chiffre avec une clé symétrique ; `aad` lie le résultat à son usage.
+pub fn seal(key: &[u8; 32], aad: &[u8], plain: &[u8]) -> String {
     let cipher = XChaCha20Poly1305::new(key.into());
     let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
     let ct = cipher.encrypt(&nonce, Payload { msg: plain, aad }).expect("chiffrement");
@@ -84,7 +95,7 @@ fn seal(key: &[u8; 32], aad: &[u8], plain: &[u8]) -> String {
     B64.encode(out)
 }
 
-fn open(key: &[u8; 32], aad: &[u8], blob: &str) -> Result<Vec<u8>, CryptoError> {
+pub fn open(key: &[u8; 32], aad: &[u8], blob: &str) -> Result<Vec<u8>, CryptoError> {
     let raw = B64.decode(blob).map_err(|_| CryptoError::Invalid)?;
     if raw.len() <= NONCE_LEN {
         return Err(CryptoError::Invalid);
@@ -110,6 +121,54 @@ pub fn encrypt_state(key: &[u8; 32], state: &GroupState) -> String {
 
 pub fn decrypt_state(key: &[u8; 32], blob: &str) -> Result<GroupState, CryptoError> {
     serde_json::from_slice(&open(key, b"mypress state v1", blob)?).map_err(|_| CryptoError::Invalid)
+}
+
+fn vault_aad(id: Uuid) -> Vec<u8> {
+    [b"mypress vault v1 ".as_slice(), id.as_bytes()].concat()
+}
+
+/// Chiffre une révision du coffre avec la clé courante du coffre.
+pub fn encrypt_vault(key: &[u8; 32], id: Uuid, payload: &VaultPayload) -> String {
+    seal(key, &vault_aad(id), &serde_json::to_vec(payload).expect("sérialisable"))
+}
+
+/// Essaie les clés du coffre, de la plus récente à la plus ancienne.
+pub fn decrypt_vault(keys: &[[u8; 32]], id: Uuid, blob: &str) -> Result<VaultPayload, CryptoError> {
+    let aad = vault_aad(id);
+    let plain = keys.iter().rev().find_map(|k| open(k, &aad, blob).ok()).ok_or(CryptoError::Invalid)?;
+    serde_json::from_slice(&plain).map_err(|_| CryptoError::Invalid)
+}
+
+/// Clé dérivée d'une phrase de passe (Argon2id, 64 Mio, 3 passes) : quelques
+/// centaines de millisecondes, pour freiner les essais en masse.
+pub fn passphrase_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], CryptoError> {
+    let params = argon2::Params::new(64 * 1024, 3, 1, Some(32)).map_err(|_| CryptoError::Key)?;
+    let mut out = [0u8; 32];
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+        .hash_password_into(passphrase.as_bytes(), salt, &mut out)
+        .map_err(|_| CryptoError::Key)?;
+    Ok(out)
+}
+
+pub fn random_salt() -> String {
+    b64(&random_key()[..16])
+}
+
+pub fn salt_from_b64(s: &str) -> Result<Vec<u8>, CryptoError> {
+    B64.decode(s).map_err(|_| CryptoError::Key)
+}
+
+/// Scelle les clés du coffre avec la clé dérivée de la phrase de passe.
+pub fn seal_vault_keys(derived: &[u8; 32], keys: &[[u8; 32]]) -> String {
+    let list: Vec<String> = keys.iter().map(|k| b64(k)).collect();
+    seal(derived, b"mypress vault-keys v1", &serde_json::to_vec(&list).expect("sérialisable"))
+}
+
+/// Erreur si la phrase de passe est fausse.
+pub fn open_vault_keys(derived: &[u8; 32], blob: &str) -> Result<Vec<[u8; 32]>, CryptoError> {
+    let list: Vec<String> =
+        serde_json::from_slice(&open(derived, b"mypress vault-keys v1", blob)?).map_err(|_| CryptoError::Invalid)?;
+    list.iter().map(|k| key_from_b64(k)).collect()
 }
 
 /// Paire X25519 d'un appareil.
@@ -181,7 +240,37 @@ mod tests {
     }
 
     fn state(key: &[u8; 32]) -> GroupState {
-        GroupState { epoch: 1, version: 3, key: b64(key), members: vec![], history_limit: 100, mailbox: None }
+        GroupState { epoch: 1, version: 3, key: b64(key), members: vec![], history_limit: 100, mailbox: None, vault: None }
+    }
+
+    #[test]
+    fn vault_revision_with_rotated_keys() {
+        let (old, new) = (random_key(), random_key());
+        let id = Uuid::now_v7();
+        let p = VaultPayload {
+            entry: Uuid::now_v7(),
+            updated_at: 5,
+            device_name: "PC".into(),
+            fields: crate::api::VaultFields { name: "Banque".into(), password: "s3cret!".into(), ..Default::default() },
+        };
+        let blob = encrypt_vault(&old, id, &p);
+        assert_eq!(decrypt_vault(&[old, new], id, &blob).unwrap(), p, "ancienne clé encore lisible");
+        assert!(decrypt_vault(&[new], id, &blob).is_err());
+        assert!(decrypt_vault(&[old], Uuid::now_v7(), &blob).is_err(), "révision non déplaçable");
+        // Une clé d'historique ne lit pas le coffre, même avec le même identifiant.
+        assert!(decrypt_item(&old, id, &blob).is_err());
+    }
+
+    #[test]
+    fn vault_keys_sealed_by_passphrase() {
+        let salt = salt_from_b64(&random_salt()).unwrap();
+        let keys = [random_key(), random_key()];
+        let derived = passphrase_key("cheval agrafe correct", &salt).unwrap();
+        let blob = seal_vault_keys(&derived, &keys);
+        assert_eq!(passphrase_key("cheval agrafe correct", &salt).unwrap(), derived, "dérivation stable");
+        assert_eq!(open_vault_keys(&derived, &blob).unwrap(), keys);
+        let wrong = passphrase_key("cheval agrafe incorrect", &salt).unwrap();
+        assert!(open_vault_keys(&wrong, &blob).is_err());
     }
 
     #[test]

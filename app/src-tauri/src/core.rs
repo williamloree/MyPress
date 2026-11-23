@@ -27,7 +27,17 @@ pub trait Host: Send + Sync {
     fn write_clipboard(&self, text: &str) -> anyhow::Result<()>;
     /// Image PNG en base64.
     fn write_image(&self, png_b64: &str) -> anyhow::Result<()>;
+    fn vault_changed(&self) {}
+    /// Secret (mot de passe) : à exclure des historiques de presse-papiers.
+    fn write_secret(&self, text: &str) -> anyhow::Result<()> {
+        self.write_clipboard(text)
+    }
+    /// Vide le presse-papiers s'il contient encore ce secret.
+    fn clear_secret(&self, _text: &str) {}
 }
+
+/// Délai avant d'effacer un secret copié.
+const SECRET_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Stockage des secrets de l'appareil (coffre du système en production).
 pub trait Secrets: Send + Sync {
@@ -59,19 +69,27 @@ pub struct PendingRekey {
     pub mailbox_id: String,
     pub secret: String,
     pub body: Rekey,
+    /// Espace du coffre dans l'ancienne boîte, à vider.
+    #[serde(default)]
+    pub vault_mailbox_id: String,
+    #[serde(default)]
+    pub vault_secret: String,
 }
 
 pub struct Peer {
     pub member: String,
     pub tx: mpsc::UnboundedSender<PeerMsg>,
     pub conn: iroh::endpoint::Connection,
+    /// L'appareil connaît le coffre (version récente) : il peut recevoir `VaultRecords`.
+    pub vault: Arc<AtomicBool>,
 }
 
 pub struct Core {
-    host: Arc<dyn Host>,
+    pub(crate) host: Arc<dyn Host>,
     store: Mutex<Store>,
     group: Mutex<GroupState>,
-    local_key: [u8; 32],
+    pub(crate) local_key: [u8; 32],
+    pub vault: crate::vault::Session,
     pub iroh_key: iroh::SecretKey,
     pub x25519: DeviceKey,
     pub device_id: String,
@@ -137,6 +155,7 @@ impl Core {
             store: Mutex::new(store),
             group: Mutex::new(group),
             local_key,
+            vault: Default::default(),
             iroh_key,
             x25519,
             device_id,
@@ -236,6 +255,7 @@ impl Core {
             }
             let _ = s.prune(new.history_limit);
         });
+        self.vault_on_group_change(&old, &new);
         // Les appareils retirés sont déconnectés ; celui qui révoque les prévient (sans la nouvelle clé).
         self.peers.lock().unwrap().retain(|_, p| {
             let keep = new.is_member(&p.member);
@@ -265,10 +285,15 @@ impl Core {
             self.become_solo("Cet appareil a été retiré du groupe.");
             return true;
         }
+        // Un appareil d'une version sans coffre a omis ses clés : on les remet.
+        let lost_vault = self.group().vault.filter(|_| new.vault.is_none());
         self.set_group(new.clone(), false);
         self.broadcast(PeerMsg::Group { state: new });
         self.broadcast(self.hello());
         self.kick_mailbox.notify_one();
+        if let Some(vault) = lost_vault {
+            self.update_group(|g| g.vault = Some(vault));
+        }
         true
     }
 
@@ -290,10 +315,13 @@ impl Core {
         state
     }
 
+    /// Le coffre est conservé : ses entrées restent lisibles sur cet appareil.
     pub fn become_solo(&self, notice: &str) {
-        let limit = self.history_limit();
+        let old = self.group();
         *self.notice.lock().unwrap() = Some(notice.to_string());
-        self.set_group(solo_group(self.me(), limit), false);
+        let mut solo = solo_group(self.me(), old.history_limit);
+        solo.vault = old.vault;
+        self.set_group(solo, false);
     }
 
     /// Retire un appareil : nouvelle clé de groupe, transmise aux appareils restants
@@ -310,6 +338,8 @@ impl Core {
             members: old.members.iter().filter(|m| m.id != member_id).cloned().collect(),
             history_limit: old.history_limit,
             mailbox: old.mailbox.clone(),
+            // Nouvelle clé du coffre, que l'appareil retiré ne reçoit pas.
+            vault: self.vault_rotated(&old.vault),
         };
         if let Some(url) = &old.mailbox {
             let keys = GroupKeys::from_state(&old)?;
@@ -319,12 +349,23 @@ impl Core {
                 .filter(|m| m.id != self.device_id)
                 .map(|m| Ok(WrappedKey { recipient: m.id.clone(), blob: crypto::wrap_state(&m.x25519, &new)? }))
                 .collect::<Result<Vec<_>, crypto::CryptoError>>()?;
-            let pending = PendingRekey { url: url.clone(), mailbox_id: keys.mailbox_id, secret: keys.mailbox_secret, body: Rekey { wrapped } };
+            let pending = PendingRekey {
+                url: url.clone(),
+                mailbox_id: keys.mailbox_id,
+                secret: keys.mailbox_secret,
+                body: Rekey { wrapped },
+                vault_mailbox_id: keys.vault_mailbox_id,
+                vault_secret: keys.vault_mailbox_secret,
+            };
             self.with_store(|s| s.set("pending_rekey", &serde_json::to_string(&pending).unwrap()));
         }
+        let rotated = new.vault != old.vault;
         self.set_group(new.clone(), true);
         self.broadcast(PeerMsg::Group { state: new });
         self.kick_mailbox.notify_one();
+        if rotated {
+            self.vault_reencrypt();
+        }
         Ok(())
     }
 
@@ -419,6 +460,22 @@ impl Core {
         self.write(&item.text, item.kind == ContentKind::Image.as_str());
     }
 
+    /// Secret copié : exclu des historiques (le nôtre compris), puis effacé du
+    /// presse-papiers après [`SECRET_TTL`] s'il n'a pas été remplacé.
+    pub fn write_secret(&self, text: String) {
+        *self.self_written.lock().unwrap() = Some(hash_text(&text));
+        if let Err(e) = self.host.write_secret(&text) {
+            *self.self_written.lock().unwrap() = None;
+            tracing::warn!("écriture du presse-papiers impossible : {e}");
+            return;
+        }
+        let host = self.host.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(SECRET_TTL);
+            host.clear_secret(&text);
+        });
+    }
+
     fn write(&self, text: &str, image: bool) {
         *self.self_written.lock().unwrap() = Some(hash_text(text));
         let res = if image { self.host.write_image(text) } else { self.host.write_clipboard(text) };
@@ -478,7 +535,7 @@ impl Core {
     pub fn hello(&self) -> PeerMsg {
         let g = self.group();
         let ids = self.with_store(|s| s.summary()).unwrap_or_default().into_iter().collect();
-        PeerMsg::Hello { epoch: g.epoch, version: g.version, ids }
+        PeerMsg::Hello { epoch: g.epoch, version: g.version, ids, vault: Some(self.vault_summary()) }
     }
 
     /// Éléments qui manquent à un appareil d'après son résumé.
@@ -491,6 +548,13 @@ impl Core {
 
     pub fn broadcast(&self, msg: PeerMsg) {
         for p in self.peers.lock().unwrap().values() {
+            let _ = p.tx.send(msg.clone());
+        }
+    }
+
+    /// Comme [`Core::broadcast`], seulement aux appareils qui connaissent le coffre.
+    pub fn broadcast_vault(&self, msg: PeerMsg) {
+        for p in self.peers.lock().unwrap().values().filter(|p| p.vault.load(Ordering::Relaxed)) {
             let _ = p.tx.send(msg.clone());
         }
     }
@@ -542,5 +606,6 @@ fn solo_group(me: Member, history_limit: u32) -> GroupState {
         members: vec![me],
         history_limit,
         mailbox: None,
+        vault: None,
     }
 }

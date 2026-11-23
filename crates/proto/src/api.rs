@@ -97,6 +97,42 @@ pub struct GroupState {
     pub history_limit: u32,
     /// Adresse de la boîte aux lettres optionnelle.
     pub mailbox: Option<String>,
+    /// Clés du coffre de mots de passe, créées avec la première entrée.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault: Option<VaultKeys>,
+}
+
+/// Clés du coffre, partagées par les appareils du groupe, la plus récente en dernier
+/// (une nouvelle est ajoutée à chaque retrait d'appareil).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum VaultKeys {
+    /// Sans phrase de passe : clés en base64, protégées comme la clé du groupe.
+    Open { keys: Vec<String> },
+    /// Clés scellées par une clé dérivée de la phrase de passe (Argon2id, sel en base64).
+    Sealed { salt: String, blob: String },
+}
+
+/// Champs d'une entrée du coffre.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VaultFields {
+    pub name: String,
+    pub url: String,
+    pub username: String,
+    pub password: String,
+    pub notes: String,
+}
+
+/// Contenu en clair d'une révision d'entrée du coffre, chiffré dans `Record::blob`.
+/// Chaque modification crée une révision et supprime la précédente : pour une même
+/// entrée, la révision la plus récente (`updated_at`, puis identifiant) l'emporte.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VaultPayload {
+    pub entry: Uuid,
+    pub updated_at: i64,
+    pub device_name: String,
+    pub fields: VaultFields,
 }
 
 impl GroupState {
@@ -121,10 +157,20 @@ pub enum PeerMsg {
     Welcome { state: GroupState },
     Denied { reason: String },
     /// Résumé envoyé à l'ouverture : rang du groupe et éléments connus (`true` = supprimé).
-    Hello { epoch: u32, version: u64, ids: Vec<(Uuid, bool)> },
+    /// `vault` : révisions du coffre connues ; absent chez les versions sans coffre,
+    /// auxquelles on n'envoie jamais `VaultRecords`.
+    Hello {
+        epoch: u32,
+        version: u64,
+        ids: Vec<(Uuid, bool)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vault: Option<Vec<(Uuid, bool)>>,
+    },
     /// Nouvel état du groupe (envoyé à un membre en retard).
     Group { state: GroupState },
     Records { records: Vec<Record> },
+    /// Révisions du coffre, chiffrées avec sa clé.
+    VaultRecords { records: Vec<Record> },
 }
 
 // ---------- Boîte aux lettres ----------

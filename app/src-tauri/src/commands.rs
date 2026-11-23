@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use uuid::Uuid;
 
-use mypress_proto::api::HISTORY_LIMITS;
+use mypress_proto::api::{VaultFields, HISTORY_LIMITS};
 
 use crate::{
     clipboard,
@@ -15,6 +15,7 @@ use crate::{
     mailbox, p2p,
     share::{Share, ShareGroup, Transfer},
     store::Item,
+    vault::{Entry, EntrySummary, VaultStatus},
     UpdateStatus, Updates, View,
 };
 
@@ -168,6 +169,8 @@ pub fn create_invite(core: State<Arc<Core>>) -> String {
 #[tauri::command]
 pub async fn join_group(core: State<'_, Arc<Core>>, code: String) -> Res<()> {
     let core = core.inner().clone();
+    // Vérifié avant de quitter le groupe actuel.
+    core.vault_keys_for_join().map_err(err)?;
     if core.group().members.len() > 1 {
         core.leave().await;
     }
@@ -277,4 +280,61 @@ pub fn reveal_file(path: String) -> Res<()> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let res = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(&path)).spawn();
     res.map(|_| ()).map_err(err)
+}
+
+// ---------- coffre de mots de passe ----------
+
+#[tauri::command]
+pub fn vault_status(core: State<Arc<Core>>) -> VaultStatus {
+    core.vault_status()
+}
+
+#[tauri::command]
+pub fn vault_list(core: State<Arc<Core>>, query: String) -> Res<Vec<EntrySummary>> {
+    core.vault_list(&query).map_err(err)
+}
+
+#[tauri::command]
+pub fn vault_entry(core: State<Arc<Core>>, id: Uuid) -> Res<Entry> {
+    core.vault_entry(id).map_err(err)
+}
+
+/// Crée (`id` absent) ou modifie une entrée ; retourne son identifiant.
+#[tauri::command]
+pub fn vault_save(core: State<Arc<Core>>, id: Option<Uuid>, fields: VaultFields) -> Res<Uuid> {
+    core.vault_save(id, fields).map_err(err)
+}
+
+#[tauri::command]
+pub fn vault_delete(core: State<Arc<Core>>, id: Uuid) -> Res<()> {
+    core.vault_delete(id).map_err(err)
+}
+
+/// `field` : "username", "password" ou "url".
+#[tauri::command]
+pub fn vault_copy(core: State<Arc<Core>>, id: Uuid, field: String) -> Res<()> {
+    core.vault_copy(id, &field).map_err(err)
+}
+
+#[tauri::command]
+pub async fn vault_unlock(core: State<'_, Arc<Core>>, passphrase: String) -> Res<()> {
+    let core = core.inner().clone();
+    tokio::task::spawn_blocking(move || core.vault_unlock(&passphrase)).await.map_err(err)?.map_err(err)
+}
+
+#[tauri::command]
+pub fn vault_lock(core: State<Arc<Core>>) {
+    core.vault_lock();
+}
+
+/// `passphrase` absente : retire la phrase de passe.
+#[tauri::command]
+pub async fn vault_set_passphrase(core: State<'_, Arc<Core>>, passphrase: Option<String>) -> Res<()> {
+    let core = core.inner().clone();
+    tokio::task::spawn_blocking(move || core.vault_set_passphrase(passphrase.as_deref())).await.map_err(err)?.map_err(err)
+}
+
+#[tauri::command]
+pub fn vault_set_auto_lock(core: State<Arc<Core>>, minutes: u32) -> Res<()> {
+    core.vault_set_auto_lock(minutes).map_err(err)
 }

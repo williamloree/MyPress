@@ -140,3 +140,21 @@ summary { cursor: pointer; color: var(--accent); }
 #share-invite-code { width: 100%; font: 12px Consolas, monospace; resize: none; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2); color: var(--fg); word-break: break-all; }
 #group-name, #join-group-code { flex: 1; }
 #create-group { margin-top: 10px; }
+
+#vault-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#vault-search { flex: 1; padding: 8px 10px; }
+#vault-list { list-style: none; padding: 0; margin: 4px 0 10px; }
+#vault-list li { display: flex; align-items: center; gap: 6px; padding: 6px 4px; border-bottom: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+#vault-list li:hover { background: var(--bg-2); }
+#vault-list li div { flex: 1; min-width: 0; }
+#vault-list b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#vault-list small { display: block; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#vault-list button { padding: 2px 8px; font-size: 11.5px; }
+#vault-passphrase, #vault-new-pass, #vault-new-pass2 { flex: 1; min-width: 0; }
+#vault-unlock { padding-top: 16px; }
+#vault-form { padding-top: 12px; }
+#vault-form .row input { flex: 1; min-width: 0; }
+#vault-form textarea { display: block; width: 100%; margin-top: 3px; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; resize: vertical; }
+#vf-password { font-family: Consolas, "Cascadia Mono", monospace; }
+#vault-remove-pass { margin: 8px 0; }
+.spacer { flex: 1; }

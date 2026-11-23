@@ -64,7 +64,39 @@ interface ShareState {
   own_devices: number;
 }
 
-type View = "history" | "settings" | "share";
+interface VaultStatus {
+  mode: "none" | "open" | "sealed";
+  unlocked: boolean;
+  auto_lock: number;
+  auto_lock_choices: number[];
+  min_passphrase: number;
+}
+
+interface VaultSummary {
+  id: string;
+  name: string;
+  url: string;
+  username: string;
+  has_password: boolean;
+  updated_at: number;
+}
+
+interface VaultFields {
+  name: string;
+  url: string;
+  username: string;
+  password: string;
+  notes: string;
+}
+
+interface VaultEntry {
+  id: string;
+  updated_at: number;
+  device_name: string;
+  fields: VaultFields;
+}
+
+type View = "history" | "settings" | "share" | "vault";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -74,6 +106,9 @@ let state: AppState;
 let view: View = "history";
 let share: ShareState | undefined;
 let sending = false;
+let vault: VaultStatus | undefined;
+/** Entrée ouverte dans le formulaire : identifiant, `null` pour une nouvelle, `undefined` si fermé. */
+let editing: string | null | undefined;
 
 // ---------- utilitaires ----------
 
@@ -186,7 +221,8 @@ $("search").addEventListener("input", () => { selected = 0; refresh(); });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     e.preventDefault();
-    if (view !== "history") showView("history");
+    if (view === "vault" && editing !== undefined) closeEntry();
+    else if (view !== "history") showView("history");
     else invoke("hide_window");
     return;
   }
@@ -323,6 +359,179 @@ $<HTMLFormElement>("join-group").addEventListener("submit", async (e) => {
     toast(`Vous avez rejoint « ${g.name} »`);
   }
 });
+
+// ---------- coffre de mots de passe ----------
+
+const PASSWORD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_.!?@#$%&*+=";
+
+/** Mot de passe aléatoire (tirage sans biais). */
+function generatePassword(length = 20): string {
+  const out: string[] = [];
+  const max = 256 - (256 % PASSWORD_CHARS.length);
+  while (out.length < length) {
+    for (const b of crypto.getRandomValues(new Uint8Array(length * 2))) {
+      if (b < max && out.length < length) out.push(PASSWORD_CHARS[b % PASSWORD_CHARS.length]);
+    }
+  }
+  return out.join("");
+}
+
+async function loadVault() {
+  vault = await call<VaultStatus>("vault_status");
+  if (vault && view === "vault") renderVault();
+}
+
+async function renderVault() {
+  const v = vault!;
+  const locked = !v.unlocked;
+  if (locked) editing = undefined;
+  $("vault-unlock").hidden = !locked;
+  $("vault-main").hidden = locked || editing !== undefined;
+  $("vault-form").hidden = locked || editing === undefined;
+  $("vault-lock").hidden = v.mode !== "sealed" || locked;
+  if (locked) {
+    $<HTMLInputElement>("vault-passphrase").focus();
+    return;
+  }
+  if (editing !== undefined) return;
+
+  $("vault-security").textContent =
+    v.mode === "sealed"
+      ? "Protégé par une phrase de passe, commune à tous vos appareils. Pour la changer :"
+      : "Sans phrase de passe, le coffre s'ouvre avec la session de cet ordinateur. Pour en définir une (commune à tous vos appareils) :";
+  $("vault-remove-pass").hidden = v.mode !== "sealed";
+  $("vault-auto-lock-label").hidden = v.mode !== "sealed";
+  $<HTMLSelectElement>("vault-auto-lock").replaceChildren(
+    ...v.auto_lock_choices.map((n) => new Option(n === 0 ? "jamais" : n === 60 ? "1 heure" : `${n} min`, `${n}`, false, n === v.auto_lock)),
+  );
+
+  const query = $<HTMLInputElement>("vault-search").value;
+  const list = (await call<VaultSummary[]>("vault_list", { query })) ?? [];
+  $("vault-list").replaceChildren(
+    ...list.map((e) => {
+      const li = entry(e.name, [e.username, e.url].filter(Boolean).join(" · ") || "—",
+        ...(e.username ? [button("Identifiant", () => vaultCopy(e.id, "username", "Identifiant copié"))] : []),
+        ...(e.has_password ? [button("Mot de passe", () => vaultCopy(e.id, "password", "Mot de passe copié, effacé dans 30 s"), "primary")] : []),
+      );
+      li.title = "Cliquer pour modifier";
+      li.onclick = (ev) => { if (!(ev.target instanceof HTMLButtonElement)) openEntry(e.id); };
+      return li;
+    }),
+  );
+  const empty = $("vault-empty");
+  empty.hidden = list.length > 0;
+  empty.textContent = query ? "Aucune entrée ne correspond." : "Aucune entrée. « Nouvelle entrée » pour enregistrer un premier mot de passe.";
+}
+
+async function vaultCopy(id: string, field: string, done: string) {
+  if ((await call("vault_copy", { id, field })) !== undefined) toast(done);
+}
+
+async function openEntry(id: string | null) {
+  let e: VaultEntry | undefined;
+  if (id) {
+    e = await call<VaultEntry>("vault_entry", { id });
+    if (!e) return;
+  }
+  const f = e?.fields ?? { name: "", url: "", username: "", password: id ? "" : generatePassword(), notes: "" };
+  editing = id;
+  $<HTMLInputElement>("vf-name").value = f.name;
+  $<HTMLInputElement>("vf-url").value = f.url;
+  $<HTMLInputElement>("vf-username").value = f.username;
+  $<HTMLInputElement>("vf-password").value = f.password;
+  $<HTMLInputElement>("vf-password").type = "password";
+  $("vf-show").textContent = "Afficher";
+  $<HTMLTextAreaElement>("vf-notes").value = f.notes;
+  $("vf-meta").textContent = e ? `Modifié ${ago(e.updated_at)} sur ${e.device_name}` : "";
+  $("vf-delete").hidden = !id;
+  renderVault();
+  $<HTMLInputElement>("vf-name").focus();
+}
+
+function closeEntry() {
+  editing = undefined;
+  renderVault();
+}
+
+$<HTMLFormElement>("vault-unlock").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $<HTMLInputElement>("vault-passphrase");
+  const err = $("vault-unlock-error");
+  err.hidden = true;
+  try {
+    await invoke("vault_unlock", { passphrase: input.value });
+    input.value = "";
+    loadVault();
+  } catch (e) {
+    err.textContent = String(e);
+    err.hidden = false;
+    input.select();
+  }
+});
+
+$<HTMLFormElement>("vault-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fields: VaultFields = {
+    name: $<HTMLInputElement>("vf-name").value,
+    url: $<HTMLInputElement>("vf-url").value,
+    username: $<HTMLInputElement>("vf-username").value,
+    password: $<HTMLInputElement>("vf-password").value,
+    notes: $<HTMLTextAreaElement>("vf-notes").value,
+  };
+  if (await call("vault_save", { id: editing, fields })) {
+    toast("Enregistré");
+    closeEntry();
+  }
+});
+
+$("vf-show").onclick = () => {
+  const input = $<HTMLInputElement>("vf-password");
+  input.type = input.type === "password" ? "text" : "password";
+  $("vf-show").textContent = input.type === "password" ? "Afficher" : "Masquer";
+};
+$("vf-generate").onclick = () => {
+  const input = $<HTMLInputElement>("vf-password");
+  input.value = generatePassword();
+  input.type = "text";
+  $("vf-show").textContent = "Masquer";
+};
+$("vf-cancel").onclick = closeEntry;
+$("vf-delete").onclick = async (e) => {
+  if (!editing || !confirmTwice(e.currentTarget as HTMLButtonElement)) return;
+  if ((await call("vault_delete", { id: editing })) !== undefined) {
+    toast("Entrée supprimée sur tous les appareils");
+    closeEntry();
+  }
+};
+
+$("vault-new").onclick = () => openEntry(null);
+$("vault-search").addEventListener("input", () => renderVault());
+$("vault-lock").onclick = () => call("vault_lock");
+
+$<HTMLFormElement>("vault-pass-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const a = $<HTMLInputElement>("vault-new-pass");
+  const b = $<HTMLInputElement>("vault-new-pass2");
+  if (a.value.length < vault!.min_passphrase) return toast(`${vault!.min_passphrase} caractères minimum`);
+  if (a.value !== b.value) return toast("Les deux saisies diffèrent");
+  if ((await call("vault_set_passphrase", { passphrase: a.value })) !== undefined) {
+    a.value = b.value = "";
+    toast("Phrase de passe enregistrée pour tous les appareils");
+    loadVault();
+  }
+});
+
+$("vault-remove-pass").onclick = async (e) => {
+  if (!confirmTwice(e.currentTarget as HTMLButtonElement)) return;
+  if ((await call("vault_set_passphrase", { passphrase: null })) !== undefined) {
+    toast("Phrase de passe retirée");
+    loadVault();
+  }
+};
+
+$<HTMLSelectElement>("vault-auto-lock").onchange = async (e) => {
+  await call("vault_set_auto_lock", { minutes: Number((e.target as HTMLSelectElement).value) });
+};
 
 // ---------- état et paramètres ----------
 
@@ -473,7 +682,13 @@ function showView(v: View) {
   $("history").hidden = v !== "history";
   $("settings").hidden = v !== "settings";
   $("share").hidden = v !== "share";
-  if (v === "history") {
+  $("vault").hidden = v !== "vault";
+  if (v === "vault") {
+    editing = undefined;
+    $<HTMLInputElement>("vault-search").value = "";
+    $("vault-unlock-error").hidden = true;
+    loadVault().then(() => { if (vault?.unlocked) $<HTMLInputElement>("vault-search").focus(); });
+  } else if (v === "history") {
     const search = $<HTMLInputElement>("search");
     search.value = "";
     selected = 0;
@@ -491,6 +706,9 @@ function showView(v: View) {
 
 $("open-settings").onclick = () => showView("settings");
 $("open-share").onclick = () => showView("share");
+$("open-vault").onclick = () => showView("vault");
+$("vault-back").onclick = () => showView("history");
+$("vault-close").onclick = () => invoke("hide_window");
 $("share-back").onclick = () => showView("history");
 $("share-close").onclick = () => invoke("hide_window");
 $("back").onclick = () => showView("history");
@@ -498,6 +716,13 @@ $("close").onclick = () => invoke("hide_window");
 
 listen<string>("show-view", (e) => { loadState(); showView(e.payload as View); });
 listen("shares-changed", () => loadShare());
+// Formulaire ouvert : rafraîchi seulement si le coffre vient d'être verrouillé.
+listen("vault-changed", async () => {
+  if (view !== "vault") return;
+  if (editing === undefined) return loadVault();
+  const s = await call<VaultStatus>("vault_status");
+  if (s && !s.unlocked) { vault = s; renderVault(); }
+});
 listen("history-changed", () => { if (view === "history") refresh(); });
 listen("status-changed", () => loadState());
 

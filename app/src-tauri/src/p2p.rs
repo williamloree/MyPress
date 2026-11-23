@@ -9,7 +9,7 @@
 use std::{
     collections::HashSet,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -58,7 +58,7 @@ pub(crate) async fn read_msg<T: serde::de::DeserializeOwned>(recv: &mut RecvStre
 }
 
 /// Découpe une liste d'éléments en trames de taille raisonnable.
-fn batches(records: Vec<Record>) -> Vec<PeerMsg> {
+fn batches(records: Vec<Record>, msg: fn(Vec<Record>) -> PeerMsg) -> Vec<PeerMsg> {
     let mut out = Vec::new();
     let mut cur = Vec::new();
     let mut size = 0;
@@ -66,12 +66,12 @@ fn batches(records: Vec<Record>) -> Vec<PeerMsg> {
         size += r.blob.as_ref().map_or(0, |b| b.len()) + 100;
         cur.push(r);
         if size >= BATCH_BYTES {
-            out.push(PeerMsg::Records { records: std::mem::take(&mut cur) });
+            out.push(msg(std::mem::take(&mut cur)));
             size = 0;
         }
     }
     if !cur.is_empty() {
-        out.push(PeerMsg::Records { records: cur });
+        out.push(msg(cur));
     }
     out
 }
@@ -178,6 +178,8 @@ pub async fn join(core: Arc<Core>, code: &str) -> anyhow::Result<()> {
     if eid.to_string() == core.device_id {
         anyhow::bail!("ce code vient de cet appareil");
     }
+    // Les entrées du coffre de cet appareil doivent rester lisibles dans le nouveau groupe.
+    let vault_keys = core.vault_keys_for_join()?;
     let endpoint = core.endpoint.get().ok_or_else(|| anyhow::anyhow!("réseau non démarré"))?.clone();
     let conn = tokio::time::timeout(TIMEOUT, endpoint.connect(eid, ALPN))
         .await
@@ -187,6 +189,7 @@ pub async fn join(core: Arc<Core>, code: &str) -> anyhow::Result<()> {
     match tokio::time::timeout(TIMEOUT, read_msg(&mut recv)).await?? {
         Some(PeerMsg::Welcome { state }) if state.is_member(&core.device_id) => {
             core.join(state);
+            core.vault_merge_keys(vault_keys);
             tokio::spawn(session(core, conn, send, recv, eid.to_string(), None));
             Ok(())
         }
@@ -199,7 +202,8 @@ pub async fn join(core: Arc<Core>, code: &str) -> anyhow::Result<()> {
 async fn session(core: Arc<Core>, conn: Connection, mut send: SendStream, mut recv: RecvStream, member: String, first: Option<PeerMsg>) {
     let (tx, mut rx) = mpsc::unbounded_channel::<PeerMsg>();
     let key = conn.stable_id();
-    core.peers.lock().unwrap().insert(key, Peer { member: member.clone(), tx: tx.clone(), conn: conn.clone() });
+    let vault = Arc::new(AtomicBool::new(false));
+    core.peers.lock().unwrap().insert(key, Peer { member: member.clone(), tx: tx.clone(), conn: conn.clone(), vault: vault.clone() });
     core.status_changed();
     tracing::debug!("{} : session ouverte avec {member}", core.device_name);
 
@@ -218,11 +222,11 @@ async fn session(core: Arc<Core>, conn: Connection, mut send: SendStream, mut re
     });
     let _ = tx.send(core.hello());
     if let Some(msg) = first {
-        handle(&core, &tx, &sent_epoch, msg);
+        handle(&core, &tx, &sent_epoch, &vault, msg);
     }
     loop {
         match read_msg(&mut recv).await {
-            Ok(Some(msg)) if core.group().is_member(&member) => handle(&core, &tx, &sent_epoch, msg),
+            Ok(Some(msg)) if core.group().is_member(&member) => handle(&core, &tx, &sent_epoch, &vault, msg),
             _ => break,
         }
     }
@@ -234,17 +238,24 @@ async fn session(core: Arc<Core>, conn: Connection, mut send: SendStream, mut re
     tracing::debug!("{} : session terminée avec {member}", core.device_name);
 }
 
-fn handle(core: &Core, tx: &mpsc::UnboundedSender<PeerMsg>, sent_epoch: &AtomicU64, msg: PeerMsg) {
+/// `vault` : le pair connaît le coffre (son `Hello` en contient le résumé).
+fn handle(core: &Core, tx: &mpsc::UnboundedSender<PeerMsg>, sent_epoch: &AtomicU64, vault: &AtomicBool, msg: PeerMsg) {
     match msg {
-        PeerMsg::Hello { epoch, version, ids } => {
+        PeerMsg::Hello { epoch, version, ids, vault: vault_ids } => {
             let g = core.group();
             if (epoch, version) < g.rank() {
                 let _ = tx.send(PeerMsg::Group { state: g.clone() });
             }
             // Même clé : on envoie ce qui lui manque.
             if epoch == g.epoch {
-                for batch in batches(core.missing_for(&ids)) {
+                for batch in batches(core.missing_for(&ids), |records| PeerMsg::Records { records }) {
                     let _ = tx.send(batch);
+                }
+                if let Some(vault_ids) = vault_ids {
+                    vault.store(true, Ordering::Relaxed);
+                    for batch in batches(core.vault_missing_for(&vault_ids), |records| PeerMsg::VaultRecords { records }) {
+                        let _ = tx.send(batch);
+                    }
                 }
                 // Notre dernier résumé date d'une autre clé : il l'a ignoré, on le renvoie.
                 if sent_epoch.load(Ordering::Relaxed) != g.epoch as u64 {
@@ -256,6 +267,7 @@ fn handle(core: &Core, tx: &mpsc::UnboundedSender<PeerMsg>, sent_epoch: &AtomicU
             core.adopt(state);
         }
         PeerMsg::Records { records } => core.apply_records(&records, false),
+        PeerMsg::VaultRecords { records } => core.apply_vault_records(&records, false),
         // Un membre nous signale que nous avons été retirés du groupe.
         PeerMsg::Denied { .. } => core.become_solo("Cet appareil a été retiré du groupe."),
         PeerMsg::Join { .. } | PeerMsg::Welcome { .. } => {}

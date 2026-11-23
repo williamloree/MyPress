@@ -9,7 +9,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use mypress_proto::api::{ContentKind, ItemPayload};
+use mypress_proto::api::{ContentKind, ItemPayload, Record};
 
 /// Durée de conservation des marqueurs de suppression.
 const TOMBSTONE_TTL_MS: i64 = 60 * 24 * 3600 * 1000;
@@ -59,7 +59,7 @@ const VIEW_COLS: &str =
     "id, created_at, device_id, device_name, kind, CASE WHEN kind = 'image' THEN COALESCE(thumb, '') ELSE text END, deleted";
 
 /// Minuscules sans accents, pour la recherche.
-fn fold(s: &str) -> String {
+pub(crate) fn fold(s: &str) -> String {
     s.to_lowercase()
         .chars()
         .map(|c| match c {
@@ -126,6 +126,17 @@ impl Store {
         )?;
         // Aperçu des images, local à l'appareil. Échoue si la colonne existe déjà.
         let _ = conn.execute("ALTER TABLE items ADD COLUMN thumb TEXT", []);
+        // Révisions du coffre, telles qu'elles circulent (chiffrées avec la clé du coffre).
+        // `blob` NULL : révision supprimée.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS vault (
+                 id TEXT PRIMARY KEY,
+                 created_at INTEGER NOT NULL,
+                 blob TEXT,
+                 updated_at INTEGER NOT NULL,
+                 synced INTEGER NOT NULL DEFAULT 0
+             );",
+        )?;
         Ok(Self { conn })
     }
 
@@ -282,6 +293,10 @@ impl Store {
             "DELETE FROM items WHERE deleted = 1 AND updated_at < ?1",
             params![now_ms() - TOMBSTONE_TTL_MS],
         )?;
+        self.conn.execute(
+            "DELETE FROM vault WHERE blob IS NULL AND updated_at < ?1",
+            params![now_ms() - TOMBSTONE_TTL_MS],
+        )?;
         Ok(())
     }
 
@@ -342,6 +357,98 @@ impl Store {
     /// Nouvelle boîte aux lettres ou nouvelle clé : tout est à renvoyer.
     pub fn mark_all_unsynced(&self) -> rusqlite::Result<()> {
         self.conn.execute("UPDATE items SET synced = 0", [])?;
+        self.conn.execute("UPDATE vault SET synced = 0", [])?;
+        Ok(())
+    }
+
+    // ---------- coffre ----------
+    // Mêmes règles que l'historique : une révision n'est jamais réécrite et une
+    // suppression l'emporte. Modifier une entrée = nouvelle révision + suppression de l'ancienne.
+
+    fn vault_records(&self, filter: &str, args: impl rusqlite::Params) -> rusqlite::Result<Vec<Record>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT id, created_at, blob FROM vault {filter}"))?;
+        let rows = stmt.query_map(args, |r| {
+            let id: String = r.get(0)?;
+            Ok(Record { id: Uuid::parse_str(&id).unwrap_or_default(), created_at: r.get(1)?, blob: r.get(2)? })
+        })?;
+        rows.collect()
+    }
+
+    pub fn vault_record(&self, id: Uuid) -> Option<Record> {
+        self.vault_records("WHERE id = ?1", params![id.to_string()]).ok()?.pop()
+    }
+
+    /// Révisions vivantes.
+    pub fn vault_live(&self) -> rusqlite::Result<Vec<Record>> {
+        self.vault_records("WHERE blob IS NOT NULL", [])
+    }
+
+    /// Nouvelle révision créée sur cet appareil.
+    pub fn vault_insert(&self, id: Uuid, blob: &str) -> rusqlite::Result<()> {
+        let now = now_ms();
+        self.conn.execute(
+            "INSERT INTO vault (id, created_at, blob, updated_at) VALUES (?1, ?2, ?3, ?2)",
+            params![id.to_string(), now, blob],
+        )?;
+        Ok(())
+    }
+
+    pub fn vault_delete(&self, id: Uuid) -> rusqlite::Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE vault SET blob = NULL, updated_at = ?2, synced = 0 WHERE id = ?1 AND blob IS NOT NULL",
+            params![id.to_string(), now_ms()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Applique une révision ou une suppression venant d'ailleurs.
+    pub fn vault_apply(&self, r: &Record, synced: bool) -> rusqlite::Result<Applied> {
+        let existing = self.vault_record(r.id);
+        let now = now_ms();
+        match (&r.blob, existing) {
+            (Some(_), Some(_)) => Ok(Applied::Ignored),
+            (None, Some(e)) if e.blob.is_none() => Ok(Applied::Ignored),
+            (None, Some(_)) => {
+                self.conn.execute(
+                    "UPDATE vault SET blob = NULL, updated_at = ?2, synced = ?3 WHERE id = ?1",
+                    params![r.id.to_string(), now, synced],
+                )?;
+                Ok(Applied::Deleted)
+            }
+            (blob, None) => {
+                self.conn.execute(
+                    "INSERT INTO vault (id, created_at, blob, updated_at, synced) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![r.id.to_string(), r.created_at, blob, now, synced],
+                )?;
+                // Marqueur inconnu : conservé pour le relayer.
+                Ok(if blob.is_some() { Applied::New } else { Applied::Ignored })
+            }
+        }
+    }
+
+    pub fn vault_summary(&self) -> rusqlite::Result<HashMap<Uuid, bool>> {
+        Ok(self.vault_records("", [])?.into_iter().map(|r| (r.id, r.blob.is_none())).collect())
+    }
+
+    pub fn vault_missing_for(&self, peer: &HashMap<Uuid, bool>) -> rusqlite::Result<Vec<Record>> {
+        Ok(self
+            .vault_records("", [])?
+            .into_iter()
+            .filter(|r| match peer.get(&r.id) {
+                None => true,
+                Some(peer_deleted) => r.blob.is_none() && !peer_deleted,
+            })
+            .collect())
+    }
+
+    pub fn vault_unsynced(&self, max: usize) -> rusqlite::Result<Vec<Record>> {
+        self.vault_records("WHERE synced = 0 LIMIT ?1", params![max as i64])
+    }
+
+    pub fn vault_mark_synced(&self, ids: &[Uuid]) -> rusqlite::Result<()> {
+        for id in ids {
+            self.conn.execute("UPDATE vault SET synced = 1 WHERE id = ?1", params![id.to_string()])?;
+        }
         Ok(())
     }
 }
@@ -414,6 +521,31 @@ mod tests {
         assert!(!all[1].text.is_empty());
         assert_eq!(s.item(id).unwrap().text, png, "contenu complet pour le collage");
         assert!(s.search("A", 10).unwrap().is_empty(), "le base64 ne doit pas être cherché");
+    }
+
+    #[test]
+    fn vault_revisions_merge_like_history() {
+        let s = Store::open_in_memory().unwrap();
+        let local = Uuid::now_v7();
+        s.vault_insert(local, "blob-local").unwrap();
+        let remote = Record { id: Uuid::now_v7(), created_at: 1, blob: Some("blob-distant".into()) };
+        assert_eq!(s.vault_apply(&remote, false).unwrap(), Applied::New);
+        assert_eq!(s.vault_apply(&remote, false).unwrap(), Applied::Ignored);
+        assert_eq!(s.vault_live().unwrap().len(), 2);
+
+        // Suppression reçue : définitive, pas de résurrection.
+        let deleted = Record { blob: None, ..remote.clone() };
+        assert_eq!(s.vault_apply(&deleted, true).unwrap(), Applied::Deleted);
+        assert_eq!(s.vault_apply(&remote, false).unwrap(), Applied::Ignored);
+        assert_eq!(s.vault_live().unwrap().len(), 1);
+
+        // Le pair connaît la révision locale vivante : seul le marqueur lui manque.
+        s.vault_delete(local).unwrap();
+        let peer = HashMap::from([(local, false), (remote.id, true)]);
+        let missing = s.vault_missing_for(&peer).unwrap();
+        assert_eq!(missing.len(), 1);
+        assert!(missing[0].id == local && missing[0].blob.is_none());
+        assert_eq!(s.vault_unsynced(10).unwrap().len(), 1, "révision reçue de la boîte déjà synchronisée");
     }
 
     #[test]

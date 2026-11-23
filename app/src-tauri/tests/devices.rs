@@ -7,6 +7,7 @@ use std::{
 };
 
 use iroh::{address_lookup::MemoryLookup, endpoint::presets, Endpoint, RelayMode};
+use mypress_proto::api::VaultFields;
 use mypress_lib::{
     core::{Core, Host, MailboxStatus, Secrets},
     mailbox, p2p,
@@ -258,4 +259,102 @@ async fn share_group_and_files() {
     assert!(a.share.send_files(share::ME, std::slice::from_ref(&src)).await.is_err());
     // Bob n'a plus le groupe.
     assert!(b.share.send_files(&g.id, &[src]).await.is_err());
+}
+
+fn entry(name: &str, password: &str) -> VaultFields {
+    VaultFields { name: name.into(), username: "moi@exemple.fr".into(), password: password.into(), ..Default::default() }
+}
+
+fn vault_names(d: &Dev) -> Vec<String> {
+    d.core.vault_list("").map(|l| l.into_iter().map(|e| serde_json::to_value(e).unwrap()["name"].as_str().unwrap().to_string()).collect()).unwrap_or_default()
+}
+
+fn vault_password(d: &Dev, name: &str) -> Option<String> {
+    let list = d.core.vault_list(name).ok()?;
+    let id: uuid::Uuid = serde_json::from_value(serde_json::to_value(list.first()?).unwrap()["id"].clone()).unwrap();
+    let e = serde_json::to_value(d.core.vault_entry(id).ok()?).unwrap();
+    Some(e["fields"]["password"].as_str()?.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn vault_between_devices() {
+    let _ = tracing_subscriber::fmt().with_env_filter("mypress_lib=debug").with_test_writer().try_init();
+    let lookup = MemoryLookup::new();
+    let a = Dev::new("PC A", &lookup).await;
+    let b = Dev::new("PC B", &lookup).await;
+    let c = Dev::new("PC C", &lookup).await;
+
+    // --- Entrée créée sur A, avant et après l'appairage.
+    let bank = a.core.vault_save(None, entry("Banque", "mdp-1")).unwrap();
+    p2p::join(b.core.clone(), &a.core.create_invite()).await.unwrap();
+    until("entrée reçue par B", || vault_password(&b, "Banque").as_deref() == Some("mdp-1")).await;
+    // Rien dans l'historique du presse-papiers.
+    assert!(!a.has("mdp-1") && !b.has("mdp-1"));
+
+    // --- Modification sur B : une seule entrée, nouvelle valeur partout.
+    b.core.vault_save(Some(bank), entry("Banque", "mdp-2")).unwrap();
+    until("modification reçue par A", || vault_password(&a, "Banque").as_deref() == Some("mdp-2")).await;
+    assert_eq!(vault_names(&a), ["Banque"]);
+
+    // --- Copie protégée : dans le presse-papiers, pas dans l'historique.
+    a.core.vault_copy(bank, "password").unwrap();
+    assert_eq!(a.host.clipboard.lock().unwrap().last().map(String::as_str), Some("mdp-2"));
+    a.copy("mdp-2"); // écho du presse-papiers, ignoré
+    assert!(!a.has("mdp-2"));
+
+    // --- Phrase de passe définie sur A : B est verrouillé.
+    assert!(a.core.vault_set_passphrase(Some("court")).is_err());
+    a.core.vault_set_passphrase(Some("une phrase assez longue")).unwrap();
+    until("B verrouillé", || b.core.vault_list("").is_err()).await;
+    assert!(b.core.vault_unlock("mauvaise phrase de passe").is_err());
+    b.core.vault_unlock("une phrase assez longue").unwrap();
+    assert_eq!(vault_password(&b, "Banque").as_deref(), Some("mdp-2"));
+    // Une entrée créée sur B verrouillé…
+    b.core.vault_lock();
+    assert!(b.core.vault_save(None, entry("Mail", "x")).is_err());
+    // …mais la synchronisation continue sans déverrouillage.
+    a.core.vault_save(None, entry("Mail", "mdp-mail")).unwrap();
+    until("révision reçue par B verrouillé", || b.core.with_store(|s| s.vault_live()).unwrap().len() == 2).await;
+
+    // --- C arrive avec son propre coffre : ses entrées restent lisibles par tous.
+    c.core.vault_save(None, entry("Wifi C", "mdp-wifi")).unwrap();
+    p2p::join(c.core.clone(), &a.core.create_invite()).await.unwrap();
+    until("C dans le groupe", || a.core.group().members.len() == 3).await;
+    until("révision de C reçue par A", || a.core.with_store(|s| s.vault_live()).unwrap().len() == 3).await;
+    assert_eq!(vault_names(&a), ["Banque", "Mail"], "clé de C pas encore fusionnée (C verrouillé)");
+    c.core.vault_unlock("une phrase assez longue").unwrap();
+    until("clé de C fusionnée", || vault_names(&a) == ["Banque", "Mail", "Wifi C"]).await;
+
+    // --- Retrait de C : nouvelle clé, entrées rechiffrées ; A et B lisent encore tout.
+    let keys_before = a.core.group().vault.clone();
+    b.core.vault_unlock("une phrase assez longue").unwrap();
+    a.core.revoke(&c.core.device_id.clone()).unwrap();
+    assert_ne!(a.core.group().vault, keys_before);
+    until("B suit la révocation", || b.core.group().epoch == a.core.group().epoch).await;
+    until("B lit les entrées rechiffrées", || vault_names(&b) == ["Banque", "Mail", "Wifi C"] && b.core.with_store(|s| s.vault_live()).unwrap().len() == 3).await;
+    a.core.vault_save(Some(bank), entry("Banque", "mdp-3")).unwrap();
+    until("B reçoit après révocation", || vault_password(&b, "Banque").as_deref() == Some("mdp-3")).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_ne!(vault_password(&c, "Banque").as_deref(), Some("mdp-3"), "C ne reçoit plus rien");
+
+    // --- Boîte aux lettres : B récupère une modification faite pendant qu'il était éteint.
+    let url = mailbox_server().await;
+    a.core.update_group(|g| g.mailbox = Some(url.clone()));
+    until("boîtes en ligne", || [&a, &b].iter().all(|d| *d.core.mailbox_status.lock().unwrap() == MailboxStatus::Online)).await;
+    b.core.set_sync_paused(true);
+    a.core.vault_save(Some(bank), entry("Banque", "mdp-4")).unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    a.core.set_sync_paused(true);
+    b.core.set_sync_paused(false);
+    until("B reçoit via la boîte", || vault_password(&b, "Banque").as_deref() == Some("mdp-4")).await;
+    assert!(b.core.online_members().is_empty(), "pas de P2P pendant ce test");
+
+    // --- Suppression, et retrait de la phrase de passe.
+    a.core.set_sync_paused(false);
+    let mail: uuid::Uuid = serde_json::from_value(serde_json::to_value(&a.core.vault_list("Mail").unwrap()[0]).unwrap()["id"].clone()).unwrap();
+    a.core.vault_delete(mail).unwrap();
+    until("suppression reçue par B", || vault_names(&b) == ["Banque", "Wifi C"]).await;
+    a.core.vault_set_passphrase(None).unwrap();
+    b.core.vault_lock();
+    until("B ouvert sans phrase", || b.core.vault_list("").is_ok()).await;
 }
