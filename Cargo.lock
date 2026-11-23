@@ -3312,7 +3312,7 @@ dependencies = [
 
 [[package]]
 name = "mypress"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3347,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "mypress-proto"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -3364,7 +3364,7 @@ dependencies = [
 
 [[package]]
 name = "mypress-server"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
