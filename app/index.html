@@ -16,27 +16,41 @@
       <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/></symbol>
-    </svg>
-    <section id="history" class="view">
-      <header class="bar" data-tauri-drag-region>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+      <symbol id="i-text" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></symbol>
+      <symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></symbol>
+      <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M5 21h14"/></symbol>
+      <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+      <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    </svg>    <section id="history" class="view">
+      <header class="bar search-bar" data-tauri-drag-region>
+        <svg class="ico"><use href="#i-search"/></svg>
         <input id="search" type="search" placeholder="Rechercher dans l'historique…" autocomplete="off" spellcheck="false" />
+        <span class="keys" title="Ouvrir de n'importe où"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>V</kbd></span>
       </header>
+      <p class="section-label">Récents</p>
       <ul id="list" role="listbox" aria-label="Historique"></ul>
       <p id="empty" class="empty" hidden>Aucun élément.</p>
       <footer class="bar foot" data-tauri-drag-region>
         <span id="status" class="status"><i></i><span></span></span>
-        <span class="hint">↑↓ choisir · Entrée coller · Suppr effacer · Échap fermer</span>
+        <span class="spacer"></span>
+        <span class="action" title="↑↓ choisir · Ctrl+1…9 coller directement · Suppr effacer · Échap fermer">Coller <kbd>↵</kbd></span>
+        <span class="sep"></span>
         <button id="open-vault" class="icon" title="Coffre de mots de passe" aria-label="Coffre de mots de passe"><svg class="ico"><use href="#i-key"/></svg></button>
-        <button id="open-share" class="icon" title="Envoyer des fichiers" aria-label="Envoyer des fichiers">⇪</button>
-        <button id="open-settings" class="icon" title="Paramètres" aria-label="Paramètres">⚙</button>
+        <button id="open-share" class="icon" title="Envoyer des fichiers" aria-label="Envoyer des fichiers"><svg class="ico"><use href="#i-upload"/></svg></button>
+        <button id="open-settings" class="icon" title="Paramètres" aria-label="Paramètres"><svg class="ico"><use href="#i-sliders"/></svg></button>
       </footer>
     </section>
 
     <section id="settings" class="view" hidden>
       <header class="bar" data-tauri-drag-region>
-        <button id="back" class="icon" title="Retour à l'historique" aria-label="Retour">←</button>
+        <button id="back" class="icon" title="Retour à l'historique" aria-label="Retour"><svg class="ico"><use href="#i-back"/></svg></button>
         <h1 data-tauri-drag-region>Paramètres</h1>
-        <button id="close" class="icon" title="Fermer" aria-label="Fermer">✕</button>
+        <button id="close" class="icon" title="Fermer" aria-label="Fermer"><svg class="ico"><use href="#i-close"/></svg></button>
       </header>
       <div class="scroll">
         <p id="notice" class="note warn" hidden></p>
@@ -89,9 +103,9 @@
 
     <section id="share" class="view" hidden>
       <header class="bar" data-tauri-drag-region>
-        <button id="share-back" class="icon" title="Retour à l'historique" aria-label="Retour">←</button>
+        <button id="share-back" class="icon" title="Retour à l'historique" aria-label="Retour"><svg class="ico"><use href="#i-back"/></svg></button>
         <h1 data-tauri-drag-region>Fichiers et groupes</h1>
-        <button id="share-close" class="icon" title="Fermer" aria-label="Fermer">✕</button>
+        <button id="share-close" class="icon" title="Fermer" aria-label="Fermer"><svg class="ico"><use href="#i-close"/></svg></button>
       </header>
       <div class="scroll">
         <label class="inline">Envoyer à <select id="target"></select></label>
@@ -126,10 +140,10 @@
 
     <section id="vault" class="view" hidden>
       <header class="bar" data-tauri-drag-region>
-        <button id="vault-back" class="icon" title="Retour" aria-label="Retour">←</button>
+        <button id="vault-back" class="icon" title="Retour" aria-label="Retour"><svg class="ico"><use href="#i-back"/></svg></button>
         <h1 id="vault-title" data-tauri-drag-region>Coffre</h1>
         <button id="vault-lock" class="icon" title="Verrouiller le coffre" aria-label="Verrouiller" hidden><svg class="ico"><use href="#i-lock"/></svg></button>
-        <button id="vault-close" class="icon" title="Fermer" aria-label="Fermer">✕</button>
+        <button id="vault-close" class="icon" title="Fermer" aria-label="Fermer"><svg class="ico"><use href="#i-close"/></svg></button>
       </header>
 
       <!-- Verrouillé -->
@@ -147,10 +161,12 @@
 
       <!-- Liste -->
       <div id="vault-list-pane" class="pane" hidden>
-        <div class="bar sub">
+        <div class="bar search-bar">
+          <svg class="ico"><use href="#i-search"/></svg>
           <input id="vault-search" type="search" placeholder="Rechercher un site, un identifiant…" autocomplete="off" spellcheck="false" />
           <button id="vault-new" class="primary" title="Nouvelle entrée (Ctrl+N)"><svg class="ico"><use href="#i-plus"/></svg> Ajouter</button>
         </div>
+        <p class="section-label">Mots de passe</p>
         <ul id="vault-list" role="listbox" aria-label="Entrées du coffre"></ul>
         <div id="vault-empty" class="empty-state" hidden>
           <div class="lock-badge" aria-hidden="true"><svg class="ico"><use href="#i-key"/></svg></div>
@@ -159,7 +175,9 @@
         </div>
         <footer class="bar foot" data-tauri-drag-region>
           <span id="vault-mode" class="status"><i></i><span></span></span>
-          <span class="hint">Entrée ouvrir · Ctrl+C mot de passe · Ctrl+B identifiant</span>
+          <span class="spacer"></span>
+          <span class="action" title="Ctrl+B copie l'identifiant · Entrée ouvre la fiche">Copier <kbd>Ctrl</kbd><kbd>C</kbd></span>
+          <span class="sep"></span>
           <button id="vault-open-settings" class="icon" title="Sécurité du coffre" aria-label="Sécurité du coffre"><svg class="ico"><use href="#i-shield"/></svg></button>
         </footer>
       </div>
@@ -215,7 +233,8 @@
         <footer class="bar actions-bar">
           <button type="submit" class="primary">Enregistrer</button>
           <button type="button" id="vf-cancel">Annuler</button>
-          <span class="hint">Ctrl+S</span>
+          <span class="spacer"></span>
+          <span class="action"><kbd>Ctrl</kbd><kbd>S</kbd></span>
         </footer>
       </form>
 

@@ -58,7 +58,8 @@ héberger pour l'utiliser.
 - 📁 **Envoi de fichiers** par glisser-déposer vers vos appareils ou un groupe, en direct et chiffré.
 - 👥 **Groupes de partage** avec d'autres personnes, séparés de votre presse-papiers : rien n'est partagé sans envoi explicite.
 - 🚀 **Mises à jour automatiques** et signées, depuis les releases GitHub.
-- 🎨 Taille d'historique au choix (50 à 1000), thème clair ou sombre, lancement au démarrage.
+- 🎨 Interface sombre pilotée au clavier (`Ctrl+1…9` pour coller directement), taille d'historique au choix
+  (50 à 1000), lancement au démarrage.
 
 ## Installation
 

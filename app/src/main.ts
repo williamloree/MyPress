@@ -129,6 +129,19 @@ function ago(ms: number): string {
 }
 
 const KIND_LABEL = { text: "Texte", url: "URL", code: "Code", image: "Image" } as const;
+const KIND_ICON = { text: "text", url: "link", code: "code", image: "image" } as const;
+
+/** Raccourci affiché en pastilles, ex. kbd("Ctrl", "1"). */
+function kbd(...keys: string[]): HTMLSpanElement {
+  const span = document.createElement("span");
+  span.className = "keys";
+  for (const k of keys) {
+    const el = document.createElement("kbd");
+    el.textContent = k;
+    span.append(el);
+  }
+  return span;
+}
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T | undefined> {
   try {
@@ -184,17 +197,27 @@ function render() {
       const mine = it.device_id === state?.device_id;
       meta.textContent = `${KIND_LABEL[it.kind]} · ${ago(it.created_at)} · ${mine ? "cet appareil" : it.device_name}`;
 
+      const kind = document.createElement("span");
+      kind.className = "kind";
+      kind.append(icon(KIND_ICON[it.kind]));
+      const body = document.createElement("div");
+      body.className = "body";
+      body.append(text, meta);
+
+      // Actions au survol, puis raccourci : ↵ pour la ligne choisie, Ctrl+1…9 pour les autres.
+      const side = document.createElement("span");
+      side.className = "side";
       const actions = document.createElement("span");
       actions.className = "actions";
-      const copy = document.createElement("button");
-      copy.textContent = "Copier";
-      copy.onclick = (e) => { e.stopPropagation(); copyItem(it); };
-      const del = document.createElement("button");
-      del.textContent = "Supprimer";
-      del.onclick = (e) => { e.stopPropagation(); call("delete_item", { id: it.id }); };
-      actions.append(copy, del);
+      actions.append(
+        iconButton("copy", "Copier sans coller", () => copyItem(it)),
+        iconButton("trash", "Supprimer (Suppr)", () => call("delete_item", { id: it.id })),
+      );
+      side.append(actions);
+      if (i === selected) side.append(kbd("↵"));
+      else if (i < 9) side.append(kbd("Ctrl", `${i + 1}`));
 
-      li.append(text, meta, actions);
+      li.append(kind, body, side);
       li.onmousemove = () => { if (selected !== i) { selected = i; render(); } };
       li.onclick = () => paste(it);
       return li;
@@ -230,6 +253,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown") { selected = Math.min(selected + 1, items.length - 1); render(); e.preventDefault(); }
   else if (e.key === "ArrowUp") { selected = Math.max(selected - 1, 0); render(); e.preventDefault(); }
   else if (e.key === "Enter" && it) { e.preventDefault(); paste(it); }
+  else if (e.ctrlKey && /^[1-9]$/.test(e.key) && items[Number(e.key) - 1]) { e.preventDefault(); paste(items[Number(e.key) - 1]); }
   else if (e.key === "Delete" && it && !$<HTMLInputElement>("search").value) { e.preventDefault(); call("delete_item", { id: it.id }); }
 });
 
